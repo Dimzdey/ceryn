@@ -1,0 +1,22 @@
+# Build output
+dist/
+build/
+
+# Dependencies
+node_modules/
+
+# Coverage
+coverage/
+.nyc_output/
+
+# Test artifacts
+*.test.js
+*.spec.js
+
+# Generated files
+*.d.ts
+*.js.map
+
+# Configuration files
+*.config.js
+*.config.cjs

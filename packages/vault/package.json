@@ -1,0 +1,77 @@
+{
+  "name": "@ceryn/vault",
+  "version": "0.1.0",
+  "description": "Zero-reflection dependency injection container for TypeScript",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "import": "./dist/index.js",
+      "types": "./dist/index.d.ts"
+    },
+    "./testing": {
+      "import": "./dist/testing/index.js",
+      "types": "./dist/testing/index.d.ts"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:coverage": "vitest run --coverage",
+    "test:ui": "vitest --ui",
+    "typecheck": "tsc --noEmit",
+    "clean": "rm -rf dist",
+    "bs": "tsx --tsconfig tsconfig.bench.json --expose-gc bs.ts",
+    "bench": "tsx --tsconfig tsconfig.bench.json --expose-gc benchmarks/run-all.ts",
+    "bench:startup": "tsx --tsconfig tsconfig.bench.json --expose-gc benchmarks/startup.bench.ts",
+    "bench:resolution": "tsx --tsconfig tsconfig.bench.json --expose-gc benchmarks/resolution.bench.ts",
+    "bench:memory": "tsx --tsconfig tsconfig.bench.json --expose-gc --max-old-space-size=4096 benchmarks/memory.bench.ts",
+    "bench:comparison": "tsx --tsconfig tsconfig.bench.json --expose-gc benchmarks/comparison.bench.ts",
+    "bench:genesis": "tsx --tsconfig tsconfig.bench.json --expose-gc benchmarks/genesis.bench.ts",
+    "bench:ultimate": "tsx --tsconfig tsconfig.bench.json --expose-gc benchmarks/ultimate.bench.ts",
+    "bench:genesis:perf": "tsx --tsconfig tsconfig.bench.json --expose-gc benchmarks/genesis-perf.bench.ts",
+    "bench:imperative:perf": "tsx --tsconfig tsconfig.bench.json --expose-gc benchmarks/imperative-perf.bench.ts",
+    "bench:e:p": "tsx --tsconfig tsconfig.bench.json --expose-gc benchmarks/enormous.bench.ts",
+    "b:e:d": "tsx --tsconfig tsconfig.bench.json --expose-gc benchmarks/di-comp.bench.ts",
+    "build:bench": "npx --yes esbuild benchmarks/**/*.ts --bundle --platform=node --target=node22 --format=cjs --outdir=dist/benchmarks --log-level=error",
+    "bench:d:c": "node --expose-gc dist/benchmarks/di-comp.bench.js"
+  },
+  "keywords": [
+    "dependency-injection",
+    "di",
+    "ioc",
+    "typescript",
+    "zero-reflection",
+    "decorators"
+  ],
+  "author": "",
+  "license": "MIT",
+  "devDependencies": {
+    "@needle-di/core": "^1.1.0",
+    "@types/node": "^20.10.0",
+    "@vitest/coverage-v8": "^3.2.4",
+    "@vitest/ui": "^3.2.4",
+    "inversify": "^7.10.3",
+    "memfs": "^4.49.0",
+    "reflect-metadata": "^0.2.2",
+    "tinybench": "^5.0.1",
+    "tsx": "^4.20.6",
+    "tsyringe": "^4.10.0",
+    "typescript": "^5.3.3",
+    "v8-natives": "^1.2.5",
+    "vitest": "^3.2.4"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "dependencies": {
+    "typedi": "^0.10.0"
+  }
+}
