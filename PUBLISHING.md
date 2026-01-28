@@ -22,37 +22,29 @@ This guide explains how to publish packages from the Ceryn monorepo to npm.
 
 ## Publishing Methods
 
-### Method 1: GitHub Release (Recommended)
+### Method 1: Push a Tag (Recommended - Fully Automated)
 
-This automatically publishes when you create a release:
+This is the simplest way - just push a version tag:
 
-1. **Update version in package.json**
+1. **Update version and create tag**
 
    ```bash
    cd packages/vault
    npm version patch  # or minor, major
+   # This updates package.json AND creates a git tag
    ```
 
-2. **Commit and push**
+2. **Push everything**
 
    ```bash
-   git add .
-   git commit -m "chore(vault): bump version to 0.1.1"
-   git push
+   git push && git push --tags
    ```
 
-3. **Create GitHub Release**
-   - Go to: https://github.com/Dimzdey/ceryn/releases/new
-   - Tag: `vault-v0.1.1` (must match package version)
-   - Title: `@ceryn/vault v0.1.1`
-   - Description: Add release notes
-   - Click **Publish release**
-
-4. **Automatic Publishing**
-   - GitHub Actions will automatically:
-     - Run all tests
-     - Build the package
-     - Publish to npm
+3. **Done!**
+   - GitHub Actions automatically detects the tag
+   - Runs all tests and checks
+   - Publishes to npm
+   - Creates a GitHub release
    - Check progress: https://github.com/Dimzdey/ceryn/actions
 
 ### Method 2: Manual Workflow Trigger
