@@ -1,3 +1,7 @@
+## <small>1.0.2 (2026-01-28)</small>
+
+* fix(vault): add publishConfig for public npm access ([67f4703](https://github.com/Dimzdey/ceryn/commit/67f4703))
+
 ## <small>1.0.1 (2026-01-28)</small>
 
 * fix(ci): configure npm publish with public access ([2b8ffc5](https://github.com/Dimzdey/ceryn/commit/2b8ffc5))
