@@ -19,13 +19,15 @@ Use [Conventional Commits](https://www.conventionalcommits.org/):
 ```
 
 **Types & Version Bumps:**
+
 - `feat:` → Minor version (0.1.0 → 0.2.0) - New features
-- `fix:` → Patch version (0.1.0 → 0.1.1) - Bug fixes  
+- `fix:` → Patch version (0.1.0 → 0.1.1) - Bug fixes
 - `perf:` → Patch version - Performance improvements
 - `BREAKING CHANGE:` → Major version (0.1.0 → 1.0.0) - Breaking changes
 - `docs:`, `chore:`, `style:`, `refactor:`, `test:` → No release
 
 **Examples:**
+
 ```bash
 # Patch release (0.1.0 → 0.1.1)
 git commit -m "fix(vault): resolve circular dependency issue"
@@ -71,6 +73,7 @@ Watch progress: https://github.com/Dimzdey/ceryn/actions
 ### What Gets Released?
 
 Semantic-release only creates a release if there are relevant commits since the last release:
+
 - Has `feat:` or `fix:` commits → **Release happens**
 - Only `docs:`, `chore:`, etc. → **No release**
 - No commits → **No release**
@@ -96,6 +99,7 @@ Semantic-release only creates a release if there are relevant commits since the 
 ### What Gets Released?
 
 Semantic-release only creates a release if there are relevant commits since the last release:
+
 - Has `feat:` or `fix:` commits → **Release happens**
 - Only `docs:`, `chore:`, etc. → **No release**
 - No commits → **No release**
@@ -122,6 +126,7 @@ Commit messages are automatically validated on commit. If invalid, you'll see:
 ```
 
 Fix it with proper format:
+
 ```bash
 git commit -m "chore(vault): add stuff"
 ```

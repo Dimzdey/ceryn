@@ -1,6 +1,6 @@
 {
   "name": "@ceryn/vault",
-  "version": "1.0.0",
+  "version": "0.1.0",
   "description": "Zero-reflection dependency injection container for TypeScript",
   "type": "module",
   "main": "./dist/index.js",
@@ -17,8 +17,8 @@
   },
   "files": [
     "dist",
-    "README.md",
-    "LICENSE"
+    "LICENSE",
+    "README.md"
   ],
   "scripts": {
     "build": "tsc",
