@@ -1,6 +1,79 @@
 # Publishing Guide
 
-This guide explains how to publish packages from the Ceryn monorepo to npm.
+This guide explains how to publish packages from the Ceryn monorepo to npm using **automated semantic versioning**.
+
+## How It Works
+
+🚀 **Fully Automated**: Versioning, changelogs, and publishing happen automatically based on your commit messages.
+
+### Commit Message Format
+
+Use [Conventional Commits](https://www.conventionalcommits.org/):
+
+```
+<type>(<scope>): <description>
+
+[optional body]
+
+[optional footer]
+```
+
+**Types & Version Bumps:**
+- `feat:` → Minor version (0.1.0 → 0.2.0) - New features
+- `fix:` → Patch version (0.1.0 → 0.1.1) - Bug fixes  
+- `perf:` → Patch version - Performance improvements
+- `BREAKING CHANGE:` → Major version (0.1.0 → 1.0.0) - Breaking changes
+- `docs:`, `chore:`, `style:`, `refactor:`, `test:` → No release
+
+**Examples:**
+```bash
+# Patch release (0.1.0 → 0.1.1)
+git commit -m "fix(vault): resolve circular dependency issue"
+
+# Minor release (0.1.0 → 0.2.0)
+git commit -m "feat(vault): add async dependency resolution"
+
+# Major release (0.1.0 → 1.0.0)
+git commit -m "feat(vault): redesign API
+
+BREAKING CHANGE: The excavate() method now returns a Promise"
+
+# No release
+git commit -m "docs(vault): update README examples"
+```
+
+## Publishing Process
+
+### Automatic Publishing (Recommended)
+
+Just push to main with conventional commits:
+
+```bash
+# 1. Make your changes
+git add .
+git commit -m "feat(vault): add lazy loading support"
+
+# 2. Push to main
+git push
+
+# 3. Done! Semantic-release automatically:
+#    ✅ Analyzes commits
+#    ✅ Determines version bump
+#    ✅ Updates package.json
+#    ✅ Generates CHANGELOG.md
+#    ✅ Creates git tag
+#    ✅ Publishes to npm
+#    ✅ Creates GitHub release
+```
+
+Watch progress: https://github.com/Dimzdey/ceryn/actions
+
+### What Gets Released?
+
+Semantic-release only creates a release if there are relevant commits since the last release:
+- Has `feat:` or `fix:` commits → **Release happens**
+- Only `docs:`, `chore:`, etc. → **No release**
+- No commits → **No release**
 
 ## Setup (One-time)
 
@@ -20,9 +93,40 @@ This guide explains how to publish packages from the Ceryn monorepo to npm.
 5. Value: Paste your npm token
 6. Click **Add secret**
 
-## Publishing Methods
+### What Gets Released?
 
-### Method 1: Push a Tag (Recommended - Fully Automated)
+Semantic-release only creates a release if there are relevant commits since the last release:
+- Has `feat:` or `fix:` commits → **Release happens**
+- Only `docs:`, `chore:`, etc. → **No release**
+- No commits → **No release**
+
+## First Release
+
+For the initial v0.1.0 release, commit with:
+
+```bash
+git commit --allow-empty -m "feat(vault): initial release"
+git push
+```
+
+This will trigger semantic-release to publish v0.1.0 (or v1.0.0 if you prefer).
+
+## Commit Message Validation
+
+Commit messages are automatically validated on commit. If invalid, you'll see:
+
+```
+⧗   input: chore add stuff
+✖   subject may not be empty [subject-empty]
+✖   type may not be empty [type-empty]
+```
+
+Fix it with proper format:
+```bash
+git commit -m "chore(vault): add stuff"
+```
+
+## Manual Publishing (Emergency Only)
 
 This is the simplest way - just push a version tag:
 
