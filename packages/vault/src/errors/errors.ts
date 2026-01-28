@@ -244,7 +244,7 @@ export class FactoryExecutionError extends Error {
       `Factory for '${token}' threw during creation. See 'cause' for details.`,
     ];
     super(format(`Factory for '${token}' failed during creation.`, dev), {
-      cause: cause as any,
+      cause: cause,
     });
     this.name = 'FactoryExecutionError';
   }

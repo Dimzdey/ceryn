@@ -51,8 +51,17 @@
     "zero-reflection",
     "decorators"
   ],
-  "author": "",
+  "author": "Dmytro Hudym",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Dimzdey/ceryn.git",
+    "directory": "packages/vault"
+  },
+  "bugs": {
+    "url": "https://github.com/Dimzdey/ceryn/issues"
+  },
+  "homepage": "https://github.com/Dimzdey/ceryn/tree/main/packages/vault#readme",
   "devDependencies": {
     "@needle-di/core": "^1.1.0",
     "@types/node": "^20.10.0",
@@ -66,12 +75,10 @@
     "tsyringe": "^4.10.0",
     "typescript": "^5.3.3",
     "v8-natives": "^1.2.5",
-    "vitest": "^3.2.4"
+    "vitest": "^3.2.4",
+    "typedi": "^0.10.0"
   },
   "engines": {
     "node": ">=18.0.0"
-  },
-  "dependencies": {
-    "typedi": "^0.10.0"
   }
 }
