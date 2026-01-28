@@ -24,11 +24,7 @@
   "author": "",
   "license": "MIT",
   "lint-staged": {
-    "packages/*/src/**/*.ts": [
-      "eslint --fix",
-      "prettier --write"
-    ],
-    "packages/*/tests/**/*.ts": [
+    "*.ts": [
       "eslint --fix",
       "prettier --write"
     ]
