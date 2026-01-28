@@ -1,3 +1,8 @@
+## <small>1.0.3 (2026-01-28)</small>
+
+* fix(vault): ensure automated publishing works correctly ([a644b50](https://github.com/Dimzdey/ceryn/commit/a644b50))
+* chore(ci): trigger 1.0.3 release after fixing public access ([8f6fd26](https://github.com/Dimzdey/ceryn/commit/8f6fd26))
+
 ## <small>1.0.2 (2026-01-28)</small>
 
 * fix(vault): add publishConfig for public npm access ([67f4703](https://github.com/Dimzdey/ceryn/commit/67f4703))
