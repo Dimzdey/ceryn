@@ -225,6 +225,80 @@ async function handleRequest(req: Request) {
 }
 ```
 
+### Dynamic Scope Registration
+
+Dynamically provide values to scopes at runtime. Scope-local registrations override vault registrations:
+
+```typescript
+// Define tokens for runtime values
+const HttpRequestT = token<Request>('HttpRequest');
+const HttpResponseT = token<Response>('HttpResponse');
+const RequestIdT = token<string>('RequestId');
+
+// Create a handler that depends on runtime values
+@Relic({ provide: HandlerT })
+class RequestHandler {
+  constructor(
+    @Summon(HttpRequestT) private req: Request,
+    @Summon(HttpResponseT) private res: Response,
+    @Summon(RequestIdT) private requestId: string
+  ) {}
+
+  handle() {
+    this.res.setHeader('X-Request-ID', this.requestId);
+    // ... process request
+  }
+}
+
+// In your HTTP server
+app.use(async (req, res) => {
+  const scope = genesis.createScope();
+
+  try {
+    // Provide runtime values to the scope
+    scope.provide(HttpRequestT, req);
+    scope.provide(HttpResponseT, res);
+    scope.provide(RequestIdT, crypto.randomUUID());
+
+    // Dependencies are automatically injected
+    const handler = scope.resolve(HandlerT);
+    await handler.handle();
+  } finally {
+    await scope.dispose();
+  }
+});
+```
+
+**Scope Methods:**
+
+- `provide<T>(token: Token<T>, value: T)`: Register a scope-local value
+- `has<T>(token: Token<T>): boolean`: Check if token exists in scope or vault
+- `tryResolve<T>(token: Token<T>): T | undefined`: Safe resolution with fallback
+- `override<T>(token: Token<T>, value: T)`: Replace existing registration
+
+```typescript
+// Check token availability
+if (scope.has(OptionalServiceT)) {
+  const service = scope.resolve(OptionalServiceT);
+  service.doWork();
+}
+
+// Safe resolution with fallback
+const logger = scope.tryResolve(LoggerT) ?? console;
+logger.log('Using fallback logger if needed');
+
+// Override for testing
+const mockDb = createMockDatabase();
+scope.override(DatabaseT, mockDb);
+```
+
+**Key Features:**
+
+- Scope-local registrations take **highest priority** (even over singleton cache)
+- Automatic cleanup for disposable instances (`dispose()` or `close()` methods)
+- Multiple scopes are completely isolated from each other
+- Type-safe API with full IntelliSense support
+
 ### Factory Providers
 
 Register dependencies using factory functions:

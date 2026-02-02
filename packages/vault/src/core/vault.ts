@@ -412,7 +412,7 @@ export class Vault {
     resolve: <T>(token: Token<T>) => T;
     resolveAsync: <T>(token: Token<T>, opts?: { signal?: AbortSignal }) => Promise<T>;
   } {
-    const scope = new Scope();
+    const scope = new Scope(this);
     const vault = this;
 
     // Bind resolve methods to this vault with the scope parameter pre-filled
@@ -470,7 +470,18 @@ export class Vault {
     assertValidToken(token); // Dev-only, stripped in production
     const id = token.id;
 
-    // OPTIMIZATION: Inline cache check with precomputed mask
+    // OPTIMIZATION: Extract scope upfront to avoid repeated access
+    const scope = opts !== undefined ? opts.scope : undefined;
+
+    // PRIORITY 1: Check scope-local registrations FIRST (highest priority)
+    if (scope !== undefined) {
+      const localEntry = scope.getLocalEntry(id);
+      if (localEntry && localEntry.flags & FLAG_HAS_INSTANCE) {
+        return localEntry.instance as T;
+      }
+    }
+
+    // PRIORITY 2: Check singleton cache
     const cached = this.cache.get(id);
     if (cached !== undefined) {
       // Single bitwise check instead of two separate checks
@@ -479,8 +490,7 @@ export class Vault {
       }
     }
 
-    // OPTIMIZATION: Direct scope check instead of optional chaining
-    const scope = opts !== undefined ? opts.scope : undefined;
+    // PRIORITY 3: Check scope cache for scoped-lifecycle instances
     if (scope !== undefined) {
       const scopeCached = scope.cache.get(id);
       if (scopeCached !== undefined && scopeCached.flags & FLAG_HAS_INSTANCE) {
@@ -1232,6 +1242,13 @@ export class Vault {
   private _tryGetFromScopeCache<T>(token: CanonicalId, scope?: Scope): T | undefined {
     if (scope === undefined) return undefined;
 
+    // Check scope-local registrations first (highest priority)
+    const localEntry = scope.getLocalEntry(token);
+    if (localEntry && localEntry.flags & FLAG_HAS_INSTANCE) {
+      return localEntry.instance as T;
+    }
+
+    // Then check scope cache for scoped-lifecycle instances
     const scopedCached = scope.cache.get(token);
     if (scopedCached !== undefined && scopedCached.flags & FLAG_HAS_INSTANCE) {
       return scopedCached.instance as T;
