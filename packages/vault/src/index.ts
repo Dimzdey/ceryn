@@ -1,6 +1,7 @@
 export { Genesis } from './api/genesis.js';
+export { createTokenGroup } from './api/token-utils.js';
 
-export { Relic, Summon, Vault, VaultRegistry } from './decorators';
+export { Relic, Summon, Vault, VaultRegistry } from './decorators/index.js';
 export { StaticRelicRegistry } from './registry/static-registry.js';
 
 export { Lifecycle } from './types/types.js';
@@ -18,6 +19,7 @@ export type {
 
 export * from './core/token.js';
 
+export { Scope } from './core/scope.js';
 export { Vault as CoreVault } from './core/vault.js';
 
 // Global types
@@ -36,5 +38,6 @@ export {
   MissingSummonDecoratorError,
   RelicNotExposedError,
   RelicNotFoundError,
+  ScopeDisposedError,
 } from './errors/errors.js';
 // test comment
