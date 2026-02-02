@@ -38,5 +38,6 @@ export {
   MissingSummonDecoratorError,
   RelicNotExposedError,
   RelicNotFoundError,
+  ScopeDisposedError,
 } from './errors/errors.js';
 // test comment

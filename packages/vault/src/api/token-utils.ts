@@ -26,9 +26,9 @@ export function createTokenGroup<T extends Record<string, unknown>>(
 ): { [K in keyof T]: Token<T[K]> } {
   const result = {} as { [K in keyof T]: Token<T[K]> };
 
-  for (const key in names) {
-    result[key] = token<T[typeof key]>(`${prefix}${key}`);
-  }
+  (Object.keys(names) as Array<keyof T>).forEach((key) => {
+    result[key] = token<T[typeof key]>(`${prefix}${String(key)}`);
+  });
 
   return result;
 }

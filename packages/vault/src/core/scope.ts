@@ -14,7 +14,7 @@
  *  - Scope-local registrations override vault registrations (highest priority)
  *  - Lazy initialization: cache and disposers only created when first used
  *  - Disposers automatically registered for instances with dispose() or close()
- *  - dispose() or disposeSync() cleans up all scoped instances in LIFO order
+ *  - dispose() or disposeSync() cleans up all scoped instances in registration order
  *  - Scope creation is O(1) - no upfront allocation
  *
  * Lifecycle interaction:
@@ -37,6 +37,12 @@
  *
  * Usage example:
  * ```typescript
+ * // Define tokens for dependency injection
+ * const RequestT = token<Request>('Request');
+ * const ResponseT = token<Response>('Response');
+ * const RequestIdT = token<string>('RequestId');
+ * const HandlerT = token<RequestHandler>('RequestHandler');
+ *
  * // HTTP request handler with dynamic dependencies
  * async function handleRequest(req: Request, res: Response) {
  *   const scope = genesis.createScope();
@@ -82,6 +88,13 @@ export class Scope {
    * Lazily allocated - undefined until first disposer is registered.
    */
   private disposers: Set<() => void | Promise<void>> | undefined;
+
+  /**
+   * Maps token IDs to their disposer functions for scope-local registrations.
+   * This allows removing old disposers when a token is overridden.
+   * Lazily allocated when first disposer is registered via provide().
+   */
+  private tokenDisposers?: Map<CanonicalId, () => void | Promise<void>>;
 
   /**
    * MRU cache for scoped relic instances.
@@ -169,6 +182,7 @@ export class Scope {
    *
    * @param token - Token to register the value for
    * @param value - Instance to provide
+   * @param isOverride - Internal flag indicating if this is an override operation
    * @throws {ScopeDisposedError} if scope has already been disposed
    *
    * @example
@@ -178,8 +192,15 @@ export class Scope {
    * scope.provide(ConnectionT, dbConnection);
    * ```
    */
-  provide<T>(token: Token<T>, value: T): void {
+  provide<T>(token: Token<T>, value: T, isOverride = false): void {
     if (this.disposed) throw new ScopeDisposedError();
+
+    // If this is an override, remove the old disposer first
+    if (isOverride && this.tokenDisposers?.has(token.id)) {
+      const oldDisposer = this.tokenDisposers.get(token.id)!;
+      this.disposers?.delete(oldDisposer);
+      this.tokenDisposers.delete(token.id);
+    }
 
     // Lazily create local registrations map
     if (!this.localRegistrations) {
@@ -212,11 +233,19 @@ export class Scope {
       (typeof (value as unknown as Disposable).dispose === 'function' ||
         typeof (value as unknown as Disposable).close === 'function')
     ) {
-      this.registerDisposer(() => {
-        const disposer =
+      const disposer = () => {
+        const disposeFn =
           (value as unknown as Disposable).dispose ?? (value as unknown as Disposable).close;
-        return disposer.call(value);
-      });
+        return disposeFn.call(value);
+      };
+
+      this.registerDisposer(disposer);
+
+      // Track this disposer by token so it can be removed on override
+      if (!this.tokenDisposers) {
+        this.tokenDisposers = new Map();
+      }
+      this.tokenDisposers.set(token.id, disposer);
     }
   }
 
@@ -266,7 +295,8 @@ export class Scope {
    * Try to resolve a token, returning undefined if not found.
    *
    * This is a safe version of resolve() that returns undefined instead of
-   * throwing when the token is not registered.
+   * throwing when the token is not registered. Other errors (like circular
+   * dependencies or disposal errors) will still be thrown.
    *
    * @param token - Token to resolve
    * @returns Resolved instance or undefined if not found
@@ -280,11 +310,12 @@ export class Scope {
   tryResolve<T>(token: Token<T>): T | undefined {
     if (this.disposed) return undefined;
 
-    try {
-      return this.resolve(token);
-    } catch {
+    // Only return undefined when the token cannot be resolved.
+    // Let other resolution errors propagate to aid debugging.
+    if (!this.has(token)) {
       return undefined;
     }
+    return this.resolve(token);
   }
 
   /**
@@ -292,8 +323,8 @@ export class Scope {
    *
    * This replaces any existing scope-local or vault registration for the token.
    * If a previous value exists and implements dispose() or close(), the old
-   * disposer is NOT called automatically - you must handle cleanup manually
-   * if needed.
+   * disposer is automatically removed to prevent memory leaks and duplicate
+   * cleanup calls.
    *
    * @param token - Token to override
    * @param value - New value to provide
@@ -306,8 +337,8 @@ export class Scope {
    * ```
    */
   override<T>(token: Token<T>, value: T): void {
-    // Simply call provide() - it will replace any existing registration
-    this.provide(token, value);
+    // Pass isOverride flag to trigger old disposer removal
+    this.provide(token, value, true);
   }
 
   /**
