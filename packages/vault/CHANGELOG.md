@@ -1,3 +1,8 @@
+## 1.1.0 (2026-02-02)
+
+* feat(vault): add createTokenGroup utility for organizing tokens (#2) ([27160da](https://github.com/Dimzdey/ceryn/commit/27160da)), closes [#2](https://github.com/Dimzdey/ceryn/issues/2)
+* Potential fix for code scanning alert no. 1: Workflow does not contain permissions (#1) ([a87d995](https://github.com/Dimzdey/ceryn/commit/a87d995)), closes [#1](https://github.com/Dimzdey/ceryn/issues/1)
+
 ## <small>1.0.3 (2026-01-28)</small>
 
 * fix(vault): ensure automated publishing works correctly ([a644b50](https://github.com/Dimzdey/ceryn/commit/a644b50))
