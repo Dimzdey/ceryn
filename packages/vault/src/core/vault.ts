@@ -11,6 +11,7 @@ import {
   MissingRelicDecoratorError,
   MultipleShadowPolicyViolationsError,
   RelicNotFoundError,
+  VaultDisposedError,
 } from '../errors/index.js';
 import { StaticRelicRegistry } from '../registry/index.js';
 import type { Disposable, ShadowPolicy } from '../types/index.js';
@@ -455,6 +456,7 @@ export class Vault {
    */
   resolve<T = unknown>(token: Token<T>, opts?: { scope?: Scope }): T {
     assertValidToken(token); // Dev-only, stripped in production
+    if (this.disposed) throw new VaultDisposedError(this.name);
     const id = token.id;
 
     // OPTIMIZATION: Extract scope upfront to avoid repeated access
@@ -555,6 +557,7 @@ export class Vault {
     opts?: { signal?: AbortSignal; scope?: Scope }
   ): Promise<T> {
     assertValidToken(token); // Dev-only, stripped in production
+    if (this.disposed) throw new VaultDisposedError(this.name);
     const stack: CanonicalId[] = [];
 
     // OPTIMIZATION: Extract options upfront to avoid repeated access
