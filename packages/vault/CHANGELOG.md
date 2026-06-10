@@ -1,3 +1,9 @@
+## <small>2.1.1 (2026-06-10)</small>
+
+* fix(vault): update package metadata for npm registry ([591fb58](https://github.com/Dimzdey/ceryn/commit/591fb58))
+* docs(vault): fix benchmark summary for N/A adapters, document scoped trade-off ([45cfc9d](https://github.com/Dimzdey/ceryn/commit/45cfc9d))
+* docs(vault): update README to v2.0.0 API terminology ([55e96de](https://github.com/Dimzdey/ceryn/commit/55e96de))
+
 ## 2.1.0 (2026-06-10)
 
 * feat(vault): add scoped lifecycle and async factory benchmark phases ([f6e0ec9](https://github.com/Dimzdey/ceryn/commit/f6e0ec9))
