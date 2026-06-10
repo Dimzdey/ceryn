@@ -1166,7 +1166,7 @@ export class Vault {
    * @param token - The token being resolved
    * @param stack - Current dependency resolution stack (for error reporting)
    */
-  private _validateLifecycleRules(token: CanonicalId, stack: CanonicalId[]): void {
+  _validateLifecycleRules(token: CanonicalId, stack: CanonicalId[]): void {
     if (stack.length === 0) return; // No parent to validate against
 
     const entry = this.store.getByCanonical(token);

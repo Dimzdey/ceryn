@@ -86,6 +86,9 @@ export class ResolverSync {
       // Extract lifecycle bits once for multiple checks (performance optimization)
       const lifecycleFlags = entry.flags & LIFECYCLE_MASK;
 
+      // Validate lifecycle rules at resolution time (catches order-independent violations)
+      this.vault._validateLifecycleRules(canonical, stack);
+
       // Fast path: hot singleton instance already materialized
       // Check: lifecycle is singleton (0b00) AND instance flag is set
       if ((entry.flags & LIFECYCLE_SINGLETON) === 0 && entry.flags & FLAG_HAS_INSTANCE) {

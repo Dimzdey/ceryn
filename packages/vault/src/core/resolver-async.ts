@@ -136,6 +136,9 @@ export class ResolverAsync {
       // Extract lifecycle bits once for multiple checks (performance optimization)
       const lifecycleFlags = entry.flags & LIFECYCLE_MASK;
 
+      // Validate lifecycle rules at resolution time (catches order-independent violations)
+      this.vault._validateLifecycleRules(canonical, stack);
+
       // Singleton lifecycle: Share promise across concurrent requests
       // Lifecycle check: bits 0-1 are 0b00 (LIFECYCLE_SINGLETON)
       if (lifecycleFlags === LIFECYCLE_SINGLETON) {
