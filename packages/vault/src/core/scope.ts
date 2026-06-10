@@ -87,7 +87,7 @@ export class Scope {
    * Cleanup functions registered for scoped instances.
    * Lazily allocated - undefined until first disposer is registered.
    */
-  private disposers: Set<() => void | Promise<void>> | undefined;
+  private disposers: Array<() => void | Promise<void>> | undefined;
 
   /**
    * Maps token IDs to their disposer functions for scope-local registrations.
@@ -166,8 +166,8 @@ export class Scope {
    */
   registerDisposer(fn: () => void | Promise<void>) {
     if (this.disposed) throw new ScopeDisposedError();
-    if (!this.disposers) this.disposers = new Set(); // lazily create
-    this.disposers.add(fn);
+    if (!this.disposers) this.disposers = []; // lazily create
+    this.disposers.push(fn);
   }
 
   /**
@@ -198,7 +198,10 @@ export class Scope {
     // If this is an override, remove the old disposer first
     if (isOverride && this.tokenDisposers?.has(token.id)) {
       const oldDisposer = this.tokenDisposers.get(token.id)!;
-      this.disposers?.delete(oldDisposer);
+      if (this.disposers) {
+        const idx = this.disposers.indexOf(oldDisposer);
+        if (idx !== -1) this.disposers.splice(idx, 1);
+      }
       this.tokenDisposers.delete(token.id);
     }
 
@@ -421,7 +424,9 @@ export class Scope {
       return;
     }
 
-    for (const fn of this.disposers) void fn();
+    for (let i = this.disposers.length - 1; i >= 0; i--) {
+      void this.disposers[i]();
+    }
     if (this._cache) this._cache.clear();
     this.disposers = undefined;
   }
@@ -446,8 +451,8 @@ export class Scope {
       return;
     }
 
-    for (const fn of this.disposers) {
-      const res = fn();
+    for (let i = this.disposers.length - 1; i >= 0; i--) {
+      const res = this.disposers[i]();
       // Check if result is a Promise using duck typing (avoids instanceof check)
       if (res && typeof (res as Promise<unknown>).then === 'function') await res;
     }
