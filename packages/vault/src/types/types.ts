@@ -254,16 +254,6 @@ export interface VaultConfig {
   shadowPolicy?: ShadowPolicy;
 
   /**
-   * Maximum number of entries retained in the hot-path MRU cache.
-   *
-   * Increasing this can improve cache hit rates for highly dynamic workloads
-   * at the cost of additional memory.
-   *
-   * @default 8
-   */
-  mruSize?: number;
-
-  /**
    * Optional hook invoked after a relic is instantiated.
    *
    * Receives the canonical token string and the instantiation duration in

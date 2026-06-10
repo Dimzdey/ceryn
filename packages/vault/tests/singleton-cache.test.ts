@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import type { Entry } from '../src/core/entry-store.js';
-import { MRUCache } from '../src/core/mru-cache.js';
+import { SingletonCache } from '../src/core/singleton-cache.js';
 import type { CanonicalId } from '../src/index.js';
 
 const createEntry = (overrides: Partial<Entry> = {}): Entry => ({
@@ -14,9 +14,9 @@ const createEntry = (overrides: Partial<Entry> = {}): Entry => ({
   ...overrides,
 });
 
-describe('MRUCache', () => {
+describe('SingletonCache', () => {
   it('primes entries for canonical, request token, and aliases', () => {
-    const cache = new MRUCache();
+    const cache = new SingletonCache();
     const entry = createEntry();
 
     cache.primeAll('request_token', entry);
@@ -27,7 +27,7 @@ describe('MRUCache', () => {
   });
 
   it('clears cached entries', () => {
-    const cache = new MRUCache();
+    const cache = new SingletonCache();
     cache.primeAll('tok_cache', createEntry());
 
     expect(cache.get('tok_cache')).toBeTruthy();

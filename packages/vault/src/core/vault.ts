@@ -37,7 +37,7 @@ import {
   LIFECYCLE_MASK,
   LIFECYCLE_SINGLETON,
 } from './flags.js';
-import { MRUCache } from './mru-cache.js';
+import { SingletonCache } from './singleton-cache.js';
 import { ResolverAsync } from './resolver-async.js';
 import { ResolverSync } from './resolver-sync.js';
 import { Scope } from './scope.js';
@@ -47,16 +47,6 @@ interface LegacyConfig {
 }
 // ---------- Internal constants ----------
 const EMPTY_DEPS: readonly CanonicalId[] = Object.freeze([] as CanonicalId[]);
-
-/**
- * Default MRU cache size (8 entries).
- *
- * This value represents a balance between memory usage and cache hit rates:
- * - Small enough to avoid excessive memory overhead
- * - Large enough to capture common hot-path tokens in typical DI workloads
- * - Tuned based on benchmarking typical request/response patterns
- */
-const DEFAULT_MRU_SIZE = 8;
 
 /**
  * Precomputed flag masks for hot-path optimization.
@@ -107,7 +97,7 @@ export class Vault {
   }
   // Core composition: small responsibilities delegated to focused helpers
   readonly store: EntryStore;
-  readonly cache: MRUCache;
+  readonly cache: SingletonCache;
   readonly exposure: ExposureIndex;
   readonly activator: Activator;
   readonly resolverAsync: ResolverAsync;
@@ -157,7 +147,7 @@ export class Vault {
 
     this.store = new EntryStore();
     this.exposure = new ExposureIndex();
-    this.cache = new MRUCache(cfg.mruSize);
+    this.cache = new SingletonCache();
     this.instantiateHook = cfg.onInstantiate;
     this.activator = new Activator(this);
     this.resolverAsync = new ResolverAsync(this, this.activator);
@@ -211,7 +201,6 @@ export class Vault {
    * Validate configuration and return a frozen, validated config object.
    *
    * This method:
-   * - Validates mruSize is within acceptable range [1, 256]
    * - Validates onInstantiate is a function or undefined
    * - Returns a shallow-frozen configuration object
    *
@@ -222,7 +211,6 @@ export class Vault {
    */
   private _validateAndFreezeConfig(rawCfg?: VaultConfig) {
     return {
-      mruSize: rawCfg?.mruSize ?? DEFAULT_MRU_SIZE,
       onInstantiate: rawCfg?.onInstantiate,
       lazyResolve: rawCfg?.lazyResolve,
       ...rawCfg,

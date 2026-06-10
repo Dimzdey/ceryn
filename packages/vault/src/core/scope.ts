@@ -72,7 +72,7 @@ import { ScopeDisposedError } from '../errors/errors.js';
 import type { Disposable } from '../types/index.js';
 import type { Entry } from './entry-store.js';
 import { FLAG_HAS_INSTANCE } from './flags.js';
-import { MRUCache } from './mru-cache.js';
+import { SingletonCache } from './singleton-cache.js';
 import type { CanonicalId, Token } from './token.js';
 import type { Vault } from './vault.js';
 
@@ -100,7 +100,7 @@ export class Scope {
    * MRU cache for scoped relic instances.
    * Lazily allocated - undefined until first scoped relic is resolved.
    */
-  private _cache?: MRUCache;
+  private _cache?: SingletonCache;
 
   /**
    * Scope-local registrations that override vault registrations.
@@ -149,7 +149,7 @@ export class Scope {
    */
   get cache() {
     if (this.disposed) throw new ScopeDisposedError();
-    return (this._cache ??= new MRUCache());
+    return (this._cache ??= new SingletonCache());
   }
 
   /**
