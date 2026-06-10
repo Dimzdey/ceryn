@@ -442,39 +442,34 @@ describe('Vault integration', () => {
       reveal: [ShadowToken],
     });
 
-    const warnVault = new Vault({
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    new Vault({
       name: 'WarnVault',
       relics: [{ provide: ShadowToken, useValue: { source: 'warn' } }],
       fuse: [producer],
       shadowPolicy: 'warn',
     });
-    warnVault['resolveLazyAttachments']();
-    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
-    (warnVault as unknown as { _enforceShadowPolicy(): void })._enforceShadowPolicy();
-    (warnVault as unknown as { _enforceShadowPolicy(): void })._enforceShadowPolicy();
     expect(warnSpy).toHaveBeenCalled();
     warnSpy.mockRestore();
 
-    const errorVault = new Vault({
-      name: 'ErrorVault',
-      relics: [{ provide: ShadowToken, useValue: { source: 'error' } }],
-      fuse: [producer],
-      shadowPolicy: 'error',
-    });
-    errorVault['resolveLazyAttachments']();
-    expect(() =>
-      (errorVault as unknown as { _enforceShadowPolicy(): void })._enforceShadowPolicy()
+    expect(
+      () =>
+        new Vault({
+          name: 'ErrorVault',
+          relics: [{ provide: ShadowToken, useValue: { source: 'error' } }],
+          fuse: [producer],
+          shadowPolicy: 'error',
+        })
     ).toThrow(MultipleShadowPolicyViolationsError);
 
-    const allowVault = new Vault({
-      name: 'AllowVault',
-      relics: [{ provide: ShadowToken, useValue: { source: 'allow' } }],
-      fuse: [producer],
-      shadowPolicy: 'allow',
-    });
-    allowVault['resolveLazyAttachments']();
-    expect(() =>
-      (allowVault as unknown as { _enforceShadowPolicy(): void })._enforceShadowPolicy()
+    expect(
+      () =>
+        new Vault({
+          name: 'AllowVault',
+          relics: [{ provide: ShadowToken, useValue: { source: 'allow' } }],
+          fuse: [producer],
+          shadowPolicy: 'allow',
+        })
     ).not.toThrow();
   });
 });

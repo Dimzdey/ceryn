@@ -251,6 +251,9 @@ export class Vault {
 
     // Compute exposure indices if we have fused vaults
     if (this.fusedVaults.length > 0) this.exposure.compute(this);
+
+    // Enforce shadow policy after all registrations and exposure are indexed
+    this._enforceShadowPolicy();
   }
 
   /**
