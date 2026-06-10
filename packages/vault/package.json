@@ -1,6 +1,6 @@
 {
   "name": "@ceryn/vault",
-  "version": "1.1.0",
+  "version": "2.0.0",
   "description": "Zero-reflection dependency injection container for TypeScript",
   "type": "module",
   "main": "./dist/index.js",
@@ -9,10 +9,6 @@
     ".": {
       "import": "./dist/index.js",
       "types": "./dist/index.d.ts"
-    },
-    "./testing": {
-      "import": "./dist/testing/index.js",
-      "types": "./dist/testing/index.d.ts"
     }
   },
   "files": [
@@ -28,20 +24,7 @@
     "test:ui": "vitest --ui",
     "typecheck": "tsc --noEmit",
     "clean": "rm -rf dist",
-    "bs": "tsx --tsconfig tsconfig.bench.json --expose-gc bs.ts",
-    "bench": "tsx --tsconfig tsconfig.bench.json --expose-gc benchmarks/run-all.ts",
-    "bench:startup": "tsx --tsconfig tsconfig.bench.json --expose-gc benchmarks/startup.bench.ts",
-    "bench:resolution": "tsx --tsconfig tsconfig.bench.json --expose-gc benchmarks/resolution.bench.ts",
-    "bench:memory": "tsx --tsconfig tsconfig.bench.json --expose-gc --max-old-space-size=4096 benchmarks/memory.bench.ts",
-    "bench:comparison": "tsx --tsconfig tsconfig.bench.json --expose-gc benchmarks/comparison.bench.ts",
-    "bench:genesis": "tsx --tsconfig tsconfig.bench.json --expose-gc benchmarks/genesis.bench.ts",
-    "bench:ultimate": "tsx --tsconfig tsconfig.bench.json --expose-gc benchmarks/ultimate.bench.ts",
-    "bench:genesis:perf": "tsx --tsconfig tsconfig.bench.json --expose-gc benchmarks/genesis-perf.bench.ts",
-    "bench:imperative:perf": "tsx --tsconfig tsconfig.bench.json --expose-gc benchmarks/imperative-perf.bench.ts",
-    "bench:e:p": "tsx --tsconfig tsconfig.bench.json --expose-gc benchmarks/enormous.bench.ts",
-    "b:e:d": "tsx --tsconfig tsconfig.bench.json --expose-gc benchmarks/di-comp.bench.ts",
-    "build:bench": "npx --yes esbuild benchmarks/**/*.ts --bundle --platform=node --target=node22 --format=cjs --outdir=dist/benchmarks --log-level=error",
-    "bench:d:c": "node --expose-gc dist/benchmarks/di-comp.bench.js"
+    "bench": "tsx --tsconfig tsconfig.bench.json --expose-gc benchmarks/benchmark.ts"
   },
   "keywords": [
     "dependency-injection",

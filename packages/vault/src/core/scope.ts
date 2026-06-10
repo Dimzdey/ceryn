@@ -1,6 +1,6 @@
 /* Scope
  *
- * Represents a logical request scope that isolates relic instances with
+ * Represents a logical request scope that isolates provider instances with
  * Lifecycle.Scoped from each other while sharing Lifecycle.Singleton instances.
  *
  * Purpose:
@@ -10,7 +10,7 @@
  *  - Support dynamic dependency injection at runtime via scope-local registrations
  *
  * Design:
- *  - Each scope has its own MRU cache for scoped relic instances
+ *  - Each scope has its own MRU cache for scoped provider instances
  *  - Scope-local registrations override vault registrations (highest priority)
  *  - Lazy initialization: cache and disposers only created when first used
  *  - Disposers automatically registered for instances with dispose() or close()
@@ -18,9 +18,9 @@
  *  - Scope creation is O(1) - no upfront allocation
  *
  * Lifecycle interaction:
- *  - Singleton relics: Shared globally, NOT stored in scope cache
- *  - Scoped relics: Isolated per scope, stored in scope cache
- *  - Transient relics: Fresh instance every time, never cached
+ *  - Singleton providers: Shared globally, NOT stored in scope cache
+ *  - Scoped providers: Isolated per scope, stored in scope cache
+ *  - Transient providers: Fresh instance every time, never cached
  *  - Scope-local registrations: Highest priority, override all other sources
  *
  * Resolution priority (highest to lowest):
@@ -72,7 +72,7 @@ import { ScopeDisposedError } from '../errors/errors.js';
 import type { Disposable } from '../types/index.js';
 import type { Entry } from './entry-store.js';
 import { FLAG_HAS_INSTANCE } from './flags.js';
-import { MRUCache } from './mru-cache.js';
+import { SingletonCache } from './singleton-cache.js';
 import type { CanonicalId, Token } from './token.js';
 import type { Vault } from './vault.js';
 
@@ -87,7 +87,7 @@ export class Scope {
    * Cleanup functions registered for scoped instances.
    * Lazily allocated - undefined until first disposer is registered.
    */
-  private disposers: Set<() => void | Promise<void>> | undefined;
+  private disposers: Array<() => void | Promise<void>> | undefined;
 
   /**
    * Maps token IDs to their disposer functions for scope-local registrations.
@@ -97,10 +97,10 @@ export class Scope {
   private tokenDisposers?: Map<CanonicalId, () => void | Promise<void>>;
 
   /**
-   * MRU cache for scoped relic instances.
-   * Lazily allocated - undefined until first scoped relic is resolved.
+   * MRU cache for scoped provider instances.
+   * Lazily allocated - undefined until first scoped provider is resolved.
    */
-  private _cache?: MRUCache;
+  private _cache?: SingletonCache;
 
   /**
    * Scope-local registrations that override vault registrations.
@@ -140,7 +140,7 @@ export class Scope {
    * Get the scope's instance cache, creating it lazily on first access.
    *
    * This getter ensures O(1) scope creation - the cache is only allocated
-   * when the first scoped relic is resolved within this scope.
+   * when the first scoped provider is resolved within this scope.
    *
    * Performance note: Validation check is only performed when accessed, not on creation.
    *
@@ -149,7 +149,7 @@ export class Scope {
    */
   get cache() {
     if (this.disposed) throw new ScopeDisposedError();
-    return (this._cache ??= new MRUCache());
+    return (this._cache ??= new SingletonCache());
   }
 
   /**
@@ -166,8 +166,8 @@ export class Scope {
    */
   registerDisposer(fn: () => void | Promise<void>) {
     if (this.disposed) throw new ScopeDisposedError();
-    if (!this.disposers) this.disposers = new Set(); // lazily create
-    this.disposers.add(fn);
+    if (!this.disposers) this.disposers = []; // lazily create
+    this.disposers.push(fn);
   }
 
   /**
@@ -198,7 +198,10 @@ export class Scope {
     // If this is an override, remove the old disposer first
     if (isOverride && this.tokenDisposers?.has(token.id)) {
       const oldDisposer = this.tokenDisposers.get(token.id)!;
-      this.disposers?.delete(oldDisposer);
+      if (this.disposers) {
+        const idx = this.disposers.indexOf(oldDisposer);
+        if (idx !== -1) this.disposers.splice(idx, 1);
+      }
       this.tokenDisposers.delete(token.id);
     }
 
@@ -351,7 +354,7 @@ export class Scope {
    * @param token - Token to resolve
    * @returns Resolved instance
    * @throws {ScopeDisposedError} if scope has been disposed
-   * @throws {RelicNotFoundError} if token is not registered
+   * @throws {ProviderNotFoundError} if token is not registered
    *
    * @internal Used by resolver, not intended for direct use
    */
@@ -380,7 +383,7 @@ export class Scope {
    * @param token - Token to resolve
    * @returns Promise resolving to the instance
    * @throws {ScopeDisposedError} if scope has been disposed
-   * @throws {RelicNotFoundError} if token is not registered
+   * @throws {ProviderNotFoundError} if token is not registered
    *
    * @internal Used by resolver, not intended for direct use
    */
@@ -421,7 +424,9 @@ export class Scope {
       return;
     }
 
-    for (const fn of this.disposers) void fn();
+    for (let i = this.disposers.length - 1; i >= 0; i--) {
+      void this.disposers[i]();
+    }
     if (this._cache) this._cache.clear();
     this.disposers = undefined;
   }
@@ -446,8 +451,8 @@ export class Scope {
       return;
     }
 
-    for (const fn of this.disposers) {
-      const res = fn();
+    for (let i = this.disposers.length - 1; i >= 0; i--) {
+      const res = this.disposers[i]();
       // Check if result is a Promise using duck typing (avoids instanceof check)
       if (res && typeof (res as Promise<unknown>).then === 'function') await res;
     }

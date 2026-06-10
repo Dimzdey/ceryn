@@ -2,27 +2,26 @@ import { describe, expect, it } from 'vitest';
 
 import {
   AggregateDisposalError,
-  AliasCollisionError,
   CircularDependencyError,
-  CircularVaultAttachmentError,
+  CircularModuleAttachmentError,
   FactoryExecutionError,
   InvalidProviderError,
   InvalidTokenError,
-  InvalidVaultConfigError,
+  InvalidModuleConfigError,
   LazyFusionResolverMissingError,
   LazyResolverInvalidReturnError,
   LifecycleViolationError,
-  MissingRelicDecoratorError,
-  MissingSummonDecoratorError,
+  MissingInjectableDecoratorError,
+  MissingInjectDecoratorError,
   MultipleShadowPolicyViolationsError,
-  RelicNotExposedError,
-  RelicNotFoundError,
+  ProviderNotExposedError,
+  ProviderNotFoundError,
   ScopeDisposedError,
   ScopedWithoutScopeError,
   ShadowPolicyViolationError,
   TokenCollisionError,
-  UnconstructableRelicError,
-  VaultDisposedError,
+  UnconstructableProviderError,
+  ContainerDisposedError,
 } from '../src/errors/errors.js';
 
 describe('error classes', () => {
@@ -31,22 +30,22 @@ describe('error classes', () => {
     expect(circular.cycle).toEqual(['A', 'B', 'A']);
     expect(circular.message).toContain('Circular dependency');
 
-    const notFound = new RelicNotFoundError('ServiceT', ['Alpha', 'Beta'], ['Foo', 'Bar']);
+    const notFound = new ProviderNotFoundError('ServiceT', ['Alpha', 'Beta'], ['Foo', 'Bar']);
     expect(notFound.token).toBe('ServiceT');
     expect(notFound.availableRelics).toEqual(['Alpha', 'Beta']);
     expect(notFound.dependencyChain).toEqual(['Foo', 'Bar']);
 
-    const notFoundLarge = new RelicNotFoundError('Huge', new Array(11).fill('X'));
+    const notFoundLarge = new ProviderNotFoundError('Huge', new Array(11).fill('X'));
     expect(notFoundLarge.availableRelics.length).toBe(11);
 
-    const missingSummon = new MissingSummonDecoratorError('Ctor', 1);
-    expect(missingSummon.message).toContain('Ctor');
+    const missingInject = new MissingInjectDecoratorError('Ctor', 1);
+    expect(missingInject.message).toContain('Ctor');
 
-    const notExposed = new RelicNotExposedError('Foo', 'Vault', []);
-    expect(notExposed.vaultName).toBe('Vault');
+    const notExposed = new ProviderNotExposedError('Foo', 'Module', []);
+    expect(notExposed.vaultName).toBe('Module');
 
-    const circularVault = new CircularVaultAttachmentError(['A', 'B', 'A']);
-    expect(circularVault.message).toContain('Circular vault fusion');
+    const circularModule = new CircularModuleAttachmentError(['A', 'B', 'A']);
+    expect(circularModule.message).toContain('Circular module import');
 
     const invalidProvider = new InvalidProviderError({ foo: 'bar' });
     expect(invalidProvider.provider).toEqual({ foo: 'bar' });
@@ -54,17 +53,14 @@ describe('error classes', () => {
     const tokenCollision = new TokenCollisionError('tok_1', 'A', 'B');
     expect(tokenCollision.newOwner).toBe('B');
 
-    const aliasCollision = new AliasCollisionError('alias', 'tok_1', 'tok_2', 'Vault');
-    expect(aliasCollision.alias).toBe('alias');
+    const missingInjectable = new MissingInjectableDecoratorError('SomeClass');
+    expect(missingInjectable.message).toContain('SomeClass');
 
-    const missingRelic = new MissingRelicDecoratorError('SomeClass');
-    expect(missingRelic.message).toContain('SomeClass');
-
-    const unconstructable = new UnconstructableRelicError('tok_missing');
+    const unconstructable = new UnconstructableProviderError('tok_missing');
     expect(unconstructable.token).toBe('tok_missing');
 
     const lazyMissing = new LazyFusionResolverMissingError();
-    expect(lazyMissing.message).toContain('Lazy fusion resolver');
+    expect(lazyMissing.message).toContain('Lazy import resolver');
 
     const factoryError = new FactoryExecutionError('tok_factory', new Error('boom'));
     expect(factoryError.token).toBe('tok_factory');
@@ -73,19 +69,19 @@ describe('error classes', () => {
     const scopeDisposed = new ScopeDisposedError();
     expect(scopeDisposed.message).toContain('Scope');
 
-    const invalidConfig = new InvalidVaultConfigError('bad');
+    const invalidConfig = new InvalidModuleConfigError('bad');
     expect(invalidConfig.reason).toBe('bad');
 
     const shadowPolicy = new ShadowPolicyViolationError(
-      'Vault',
+      'Module',
       ['A', 'B', 'A'],
       'tok',
       'singleton'
     );
     expect(shadowPolicy.owners).toEqual(['A', 'B', 'A']);
 
-    const vaultDisposed = new VaultDisposedError('Vault');
-    expect(vaultDisposed.vaultName).toBe('Vault');
+    const containerDisposed = new ContainerDisposedError('Module');
+    expect(containerDisposed.vaultName).toBe('Module');
 
     const scopedWithoutScope = new ScopedWithoutScopeError('tok_scoped', ['ChainA', 'ChainB']);
     expect(scopedWithoutScope.token).toBe('tok_scoped');
@@ -93,13 +89,13 @@ describe('error classes', () => {
     const invalidToken = new InvalidTokenError({ bad: true });
     expect(invalidToken.token).toEqual({ bad: true });
 
-    const lazyInvalidReturn = new LazyResolverInvalidReturnError('Vault', 123);
-    expect(lazyInvalidReturn.className).toBe('Vault');
+    const lazyInvalidReturn = new LazyResolverInvalidReturnError('Module', 123);
+    expect(lazyInvalidReturn.className).toBe('Module');
 
     const aggregate = new AggregateDisposalError([new Error('first'), new Error('second')]);
     expect(aggregate.errors).toHaveLength(2);
 
-    const shadowViolations = new MultipleShadowPolicyViolationsError('Vault', [
+    const shadowViolations = new MultipleShadowPolicyViolationsError('Module', [
       { token: 'tok', producers: ['A'], lifecycle: 'singleton' },
     ]);
     expect(shadowViolations.violations).toHaveLength(1);

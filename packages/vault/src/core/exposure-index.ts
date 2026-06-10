@@ -2,35 +2,35 @@ import type { CanonicalId } from './token.js';
 import type { Vault } from './vault.js';
 
 /**
- * Cross-vault exposure index.
+ * Cross-module exposure index.
  *
- * Maintains fast lookup maps for tokens exposed by fused vaults, enabling
- * efficient cross-vault dependency resolution. Separates aether (transitive)
- * from explicit reveal exposures.
+ * Maintains fast lookup maps for tokens exposed by imported modules, enabling
+ * efficient cross-module dependency resolution. Separates global (transitive)
+ * from explicit export exposures.
  *
  * Responsibilities:
- * - Index all exposed tokens from fused vaults
- * - Maintain aether (transitive) vs revealed (explicit) separation
+ * - Index all exposed tokens from imported modules
+ * - Maintain global (transitive) vs exported (explicit) separation
  * - Track computation state and version for cache invalidation
- * - Prevent redundant traversal of vault fusion graphs
+ * - Prevent redundant traversal of module import graphs
  *
  * Design notes:
- * - Uses iterative DFS to avoid stack overflow on deep fusion graphs
+ * - Uses iterative DFS to avoid stack overflow on deep import graphs
  * - WeakMap/WeakSet for automatic memory cleanup of vault references
  * - Version stamping for shadow policy cache invalidation
  */
 export class ExposureIndex {
   /**
-   * Aether exposure map: token -> vault/canonical reference.
-   * Contains transitively exposed tokens from aether vaults.
+   * Global exposure map: token -> vault/canonical reference.
+   * Contains transitively exposed tokens from global modules.
    */
-  private readonly aether = new Map<string, { vault: Vault; canonical: CanonicalId }>();
+  private readonly global = new Map<string, { vault: Vault; canonical: CanonicalId }>();
 
   /**
-   * Explicit reveal map: token -> vault/canonical reference.
-   * Contains explicitly revealed tokens from non-aether vaults.
+   * Explicit export map: token -> vault/canonical reference.
+   * Contains explicitly exported tokens from non-global modules.
    */
-  private readonly revealed = new Map<string, { vault: Vault; canonical: CanonicalId }>();
+  private readonly exported = new Map<string, { vault: Vault; canonical: CanonicalId }>();
 
   /** Computation complete flag (prevents redundant indexing) */
   private computed = false;
@@ -42,7 +42,7 @@ export class ExposureIndex {
   private pairCache: WeakMap<Vault, WeakSet<Vault>> = new WeakMap();
 
   /**
-   * Visited vaults set: prevents cycles in fusion graph traversal.
+   * Visited vaults set: prevents cycles in import graph traversal.
    * WeakSet allows automatic cleanup.
    */
   private visited: WeakSet<Vault> = new WeakSet();
@@ -51,19 +51,29 @@ export class ExposureIndex {
   private version = 0;
 
   /**
-   * Public accessor for aether exposure map.
+   * Public accessor for global exposure map.
    * Used by resolution logic to find transitively exposed tokens.
    */
+  get globalMap() {
+    return this.global;
+  }
+
+  /** @deprecated Use globalMap instead */
   get aetherMap() {
-    return this.aether;
+    return this.global;
   }
 
   /**
-   * Public accessor for explicit reveal map.
-   * Used by resolution logic to find explicitly revealed tokens.
+   * Public accessor for explicit export map.
+   * Used by resolution logic to find explicitly exported tokens.
    */
+  get exportedMap() {
+    return this.exported;
+  }
+
+  /** @deprecated Use exportedMap instead */
   get revealedMap() {
-    return this.revealed;
+    return this.exported;
   }
 
   /**
@@ -83,10 +93,10 @@ export class ExposureIndex {
   }
 
   /**
-   * Compute exposure index for a vault fusion graph.
+   * Compute exposure index for a module import graph.
    *
-   * Performs iterative DFS traversal of the fusion graph, indexing all
-   * exposed tokens by type (aether vs revealed). Idempotent - returns
+   * Performs iterative DFS traversal of the import graph, indexing all
+   * exposed tokens by type (global vs exported). Idempotent - returns
    * immediately if already computed.
    *
    * @param root - The root vault to index from
@@ -95,7 +105,7 @@ export class ExposureIndex {
   compute(root: Vault): number {
     if (this.computed) return this.version;
 
-    // Iterative DFS to avoid stack overflow on deep fusion graphs
+    // Iterative DFS to avoid stack overflow on deep import graphs
     const stack = [root];
     while (stack.length) {
       const current = stack.pop();
@@ -108,10 +118,10 @@ export class ExposureIndex {
       // Index this vault's exposed tokens
       this.indexVault(current);
 
-      // Add unprocessed fused vaults to stack
-      for (const fused of current.fusedVaults) {
-        if (this.markPair(current, fused)) continue; // Skip if pair seen
-        stack.push(fused);
+      // Add unprocessed imported modules to stack
+      for (const imported of current.importedModules) {
+        if (this.markPair(current, imported)) continue; // Skip if pair seen
+        stack.push(imported);
       }
     }
 
@@ -126,8 +136,8 @@ export class ExposureIndex {
    * Used when vault structure changes or for cleanup.
    */
   clear() {
-    this.aether.clear();
-    this.revealed.clear();
+    this.global.clear();
+    this.exported.clear();
     this.computed = false;
     this.pairCache = new WeakMap();
     this.visited = new WeakSet();
@@ -136,17 +146,17 @@ export class ExposureIndex {
   /**
    * Index a single vault's exposed tokens.
    *
-   * Adds tokens to either aether or revealed map based on vault's aether flag.
+   * Adds tokens to either global or exported map based on vault's global flag.
    * Includes all aliases for each exposed token.
    *
    * @param vault - Vault to index
    */
   private indexVault(vault: Vault): void {
-    // Choose target map based on aether flag
-    const target = vault.isAetherHost ? this.aether : this.revealed;
+    // Choose target map based on global flag
+    const target = vault.isGlobal ? this.global : this.exported;
 
-    // Index each revealed token
-    for (const canonical of vault.revealedTokens) {
+    // Index each exported token
+    for (const canonical of vault.exportedTokens) {
       const entry = vault.store.getByCanonical(canonical);
       if (!entry) continue;
 
@@ -166,7 +176,7 @@ export class ExposureIndex {
    * Mark a vault pair as processed.
    *
    * Tracks which vault->vault edges have been traversed to prevent
-   * redundant processing of the same fusion relationship.
+   * redundant processing of the same import relationship.
    *
    * @param from - Source vault
    * @param to - Target vault

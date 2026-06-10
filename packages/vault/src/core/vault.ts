@@ -3,30 +3,31 @@
 /* eslint-disable no-duplicate-imports */
 import {
   AggregateDisposalError,
-  CircularVaultAttachmentError,
+  CircularModuleAttachmentError,
   InvalidProviderError,
   InvalidTokenError,
-  InvalidVaultConfigError,
+  InvalidModuleConfigError,
   LifecycleViolationError,
-  MissingRelicDecoratorError,
+  MissingInjectableDecoratorError,
   MultipleShadowPolicyViolationsError,
-  RelicNotFoundError,
-} from '../errors';
-import { StaticRelicRegistry } from '../registry';
-import type { Disposable, ShadowPolicy } from '../types';
+  ProviderNotFoundError,
+  ContainerDisposedError,
+} from '../errors/index.js';
+import { MetadataRegistry } from '../registry/index.js';
+import type { Disposable, ShadowPolicy } from '../types/index.js';
 import {
   Lifecycle,
   lifecycleToFlag,
   type ClassProvider,
   type Constructor,
-  type DecoratedVaultClass,
+  type DecoratedModuleClass,
   type FactoryProvider,
   type Provider,
-  type RelicMetadata,
-  type StaticRelicDefinition,
+  type ProviderMetadata,
+  type StaticProviderDefinition,
   type ValueProvider,
-  type VaultConfig,
-} from '../types';
+  type ModuleConfig,
+} from '../types/index.js';
 import { Activator } from './activator.js';
 import type { Entry } from './entry-store.js';
 import { EntryStore } from './entry-store.js';
@@ -37,26 +38,16 @@ import {
   LIFECYCLE_MASK,
   LIFECYCLE_SINGLETON,
 } from './flags.js';
-import { MRUCache } from './mru-cache.js';
+import { SingletonCache } from './singleton-cache.js';
 import { ResolverAsync } from './resolver-async.js';
 import { ResolverSync } from './resolver-sync.js';
 import { Scope } from './scope.js';
 import { isToken, type CanonicalId, type Token } from './token.js';
 interface LegacyConfig {
-  __vaultCfg__: VaultConfig;
+  __moduleCfg__: ModuleConfig;
 }
 // ---------- Internal constants ----------
 const EMPTY_DEPS: readonly CanonicalId[] = Object.freeze([] as CanonicalId[]);
-
-/**
- * Default MRU cache size (8 entries).
- *
- * This value represents a balance between memory usage and cache hit rates:
- * - Small enough to avoid excessive memory overhead
- * - Large enough to capture common hot-path tokens in typical DI workloads
- * - Tuned based on benchmarking typical request/response patterns
- */
-const DEFAULT_MRU_SIZE = 8;
 
 /**
  * Precomputed flag masks for hot-path optimization.
@@ -84,9 +75,9 @@ function assertValidToken(token: unknown): asserts token is Token {
  * Vault: minimal, deterministic DI container core.
  *
  * This module organizes registration, resolution (sync + async), cross-vault
- * exposure, and a tiny hot-path MRU cache. The implementation favors clarity
- * and predictable invariants: registrations are sealed via finalizeEntries(),
- * async singletons collapse via entry.promise, and lazy fused vaults are
+ * exposure, and a singleton instance cache. The implementation favors clarity
+ * and predictable invariants: registrations are sealed after construction,
+ * async singletons collapse via entry.promise, and lazy imported modules are
  * materialized on-demand with rollback on failure.
  */
 
@@ -107,32 +98,31 @@ export class Vault {
   }
   // Core composition: small responsibilities delegated to focused helpers
   readonly store: EntryStore;
-  readonly cache: MRUCache;
+  readonly cache: SingletonCache;
   readonly exposure: ExposureIndex;
   readonly activator: Activator;
   readonly resolverAsync: ResolverAsync;
   readonly resolverSync: ResolverSync;
 
-  // Tokens this vault explicitly chooses to reveal to fused peers
-  readonly revealedTokens = new Set<CanonicalId>();
+  // Tokens this vault explicitly chooses to export to imported modules
+  readonly exportedTokens = new Set<CanonicalId>();
 
-  // Fusion attachments (other vaults fused in). Supports lazy class-based
+  // Fusion attachments (other vaults imported in). Supports lazy class-based
   // attachments which are resolved the first time cross-vault indices are
   // required.
-  readonly fusedVaults: Vault[] = [];
-  private lazyAttachmentClasses: Constructor[] = [];
-  private lazyAttachmentsResolved = false; // flip only after successful compute()
+  readonly importedModules: Vault[] = [];
+  private lazyImportClasses: Constructor[] = [];
+  private lazyImportsResolved = false; // flip only after successful compute()
 
-  // OPTIMIZATION: Pre-allocated stack buffer for faster dependency tracking
-  // Uses counter-based indexing instead of push/pop for better performance
-  private readonly scratchStack: CanonicalId[] = [];
+  // NOTE: scratchStack was removed — each resolve() call now allocates a fresh
+  // stack to avoid re-entrancy corruption when factories call vault.resolve().
 
   // Registration sealed guard
   private entriesSealed = false;
 
   // Identity / options
   private readonly name: string;
-  private readonly isAether: boolean;
+  private readonly _isGlobal: boolean;
   private readonly shadowPolicy: ShadowPolicy;
   private readonly lazyResolver?: (c: Constructor) => Vault;
   private readonly instantiateHook?: (token: string, durationNs: number) => void;
@@ -142,9 +132,9 @@ export class Vault {
   private shadowIncomingCache: Map<CanonicalId, string[]> | null = null;
   private shadowIncomingStamp = -1;
 
-  constructor(config?: VaultConfig | DecoratedVaultClass) {
+  constructor(config?: ModuleConfig | DecoratedModuleClass) {
     // Extract configuration from decorated vault class or use direct config
-    // Decorated classes have __vaultCfg__ property attached by @Vault() decorator
+    // Decorated classes have __moduleCfg__ property attached by @Vault() decorator
     const rawCfg = this._extractConfig(config);
 
     // Validate and freeze configuration (shallow freeze is acceptable since we
@@ -157,15 +147,15 @@ export class Vault {
 
     this.store = new EntryStore();
     this.exposure = new ExposureIndex();
-    this.cache = new MRUCache(cfg.mruSize);
+    this.cache = new SingletonCache();
     this.instantiateHook = cfg.onInstantiate;
     this.activator = new Activator(this);
     this.resolverAsync = new ResolverAsync(this, this.activator);
     this.resolverSync = new ResolverSync(this, this.activator);
 
-    this.name = cfg.name ?? 'Vault';
+    this.name = cfg.name ?? 'Module';
     this.shadowPolicy = cfg.shadowPolicy ?? 'error';
-    this.isAether = cfg.aether ?? false;
+    this._isGlobal = cfg.global ?? false;
     this.lazyResolver = cfg.lazyResolve;
 
     if (rawCfg) this._fastInit(cfg);
@@ -183,27 +173,27 @@ export class Vault {
     return this._sourceClass;
   }
   /**
-   * Extract configuration from either a direct VaultConfig object or a
-   * DecoratedVaultClass with embedded __vaultCfg__.
+   * Extract configuration from either a direct ModuleConfig object or a
+   * DecoratedModuleClass with embedded __moduleCfg__.
    *
    * This supports two initialization patterns:
-   * 1. Direct: new Vault({ relics: [...] })
-   * 2. Decorated: new Vault(MyVaultClass) where MyVaultClass has __vaultCfg__
+   * 1. Direct: new Vault({ providers: [...] })
+   * 2. Decorated: new Vault(MyVaultClass) where MyVaultClass has __moduleCfg__
    */
-  private _extractConfig(config?: VaultConfig | DecoratedVaultClass): VaultConfig | undefined {
+  private _extractConfig(config?: ModuleConfig | DecoratedModuleClass): ModuleConfig | undefined {
     if (!config) return undefined;
 
-    // Check if this is a decorated vault class (has __vaultCfg__ property)
-    if (typeof config === 'function' && '__vaultCfg__' in config) {
-      return config.__vaultCfg__;
+    // Check if this is a decorated vault class (has __moduleCfg__ property)
+    if (typeof config === 'function' && '__moduleCfg__' in config) {
+      return config.__moduleCfg__;
     }
 
-    // Check if this is a plain object that might have __vaultCfg__ (legacy support)
-    if (typeof config === 'object' && '__vaultCfg__' in config) {
-      return (config as LegacyConfig).__vaultCfg__;
+    // Check if this is a plain object that might have __moduleCfg__ (legacy support)
+    if (typeof config === 'object' && '__moduleCfg__' in config) {
+      return (config as LegacyConfig).__moduleCfg__;
     }
 
-    // Direct VaultConfig object
+    // Direct ModuleConfig object
     return config;
   }
 
@@ -211,36 +201,45 @@ export class Vault {
    * Validate configuration and return a frozen, validated config object.
    *
    * This method:
-   * - Validates mruSize is within acceptable range [1, 256]
    * - Validates onInstantiate is a function or undefined
    * - Returns a shallow-frozen configuration object
    *
    * Note: Shallow freeze is acceptable because:
-   * - Arrays (fuse, relics, reveal) are copied during _fastInit
+   * - Arrays (fuse, providers, export) are copied during _fastInit
    * - We don't mutate nested configuration objects after construction
    * - Deep freeze would impose unnecessary performance cost for minimal benefit
    */
-  private _validateAndFreezeConfig(rawCfg?: VaultConfig) {
-    return {
-      mruSize: rawCfg?.mruSize ?? DEFAULT_MRU_SIZE,
-      onInstantiate: rawCfg?.onInstantiate,
-      lazyResolve: rawCfg?.lazyResolve,
-      ...rawCfg,
-    };
+  private _validateAndFreezeConfig(rawCfg?: ModuleConfig): ModuleConfig {
+    const cfg: ModuleConfig = { ...rawCfg };
+
+    if (cfg.onInstantiate !== undefined && typeof cfg.onInstantiate !== 'function') {
+      throw new InvalidModuleConfigError("'onInstantiate' must be a function");
+    }
+
+    if (
+      cfg.shadowPolicy !== undefined &&
+      cfg.shadowPolicy !== 'error' &&
+      cfg.shadowPolicy !== 'allow' &&
+      cfg.shadowPolicy !== 'warn'
+    ) {
+      throw new InvalidModuleConfigError("'shadowPolicy' must be 'error', 'allow', or 'warn'");
+    }
+
+    return Object.freeze(cfg);
   }
   /**
    * Fast initialization path for vault configuration.
    *
-   * Validates and processes fuse, relics, and reveal arrays with comprehensive
+   * Validates and processes fuse, providers, and export arrays with comprehensive
    * error checking to ensure type safety and catch configuration errors early.
    */
-  private _fastInit(cfg: VaultConfig): void {
-    const { fuse, relics, reveal } = cfg;
+  private _fastInit(cfg: ModuleConfig): void {
+    const { imports: fuse, providers: relics, exports: reveal } = cfg;
 
     // Validate and process fuse array
     if (fuse !== undefined) {
       if (!Array.isArray(fuse)) {
-        throw new InvalidVaultConfigError(`'fuse' must be an array.`);
+        throw new InvalidModuleConfigError(`'imports' must be an array.`);
       }
       this._validateAndProcessFuse(fuse);
     }
@@ -248,7 +247,7 @@ export class Vault {
     // Validate and process relics array
     if (relics !== undefined) {
       if (!Array.isArray(relics)) {
-        throw new InvalidVaultConfigError(`'relics' must be an array.`);
+        throw new InvalidModuleConfigError(`'providers' must be an array.`);
       }
       this._validateAndProcessRelics(relics);
     }
@@ -256,13 +255,16 @@ export class Vault {
     // Validate and process reveal array
     if (reveal !== undefined) {
       if (!Array.isArray(reveal)) {
-        throw new InvalidVaultConfigError(`'reveal' must be an array.`);
+        throw new InvalidModuleConfigError(`'exports' must be an array.`);
       }
       this._validateAndProcessReveal(reveal);
     }
 
-    // Compute exposure indices if we have fused vaults
-    if (this.fusedVaults.length > 0) this.exposure.compute(this);
+    // Compute exposure indices if we have imported modules
+    if (this.importedModules.length > 0) this.exposure.compute(this);
+
+    // Enforce shadow policy after all registrations and exposure are indexed
+    this._enforceShadowPolicy();
   }
 
   /**
@@ -272,74 +274,74 @@ export class Vault {
    * - A Vault instance (concrete fusion)
    * - A constructor function (lazy fusion)
    *
-   * @throws InvalidVaultConfigError if any item is invalid
+   * @throws InvalidModuleConfigError if any item is invalid
    */
   private _validateAndProcessFuse(fuse: (Constructor | Vault)[]): void {
     for (let i = 0; i < fuse.length; i++) {
       const item = fuse[i];
 
       if (item == null) {
-        throw new InvalidVaultConfigError(
-          `fuse[${i}] must be a Vault instance or constructor function, got ${item}`
+        throw new InvalidModuleConfigError(
+          `imports[${i}] must be a Vault instance or constructor function, got ${item}`
         );
       }
 
       if (item instanceof Vault) {
-        this.fusedVaults.push(item);
+        this.importedModules.push(item);
       } else if (typeof item === 'function') {
         // Validate it's actually a constructor (has prototype)
         // This catches arrow functions, async functions, etc.
         if (!item.prototype || typeof item.prototype !== 'object') {
-          throw new InvalidVaultConfigError(
-            `fuse[${i}] must be a class constructor, not an arrow or async function. ` +
+          throw new InvalidModuleConfigError(
+            `imports[${i}] must be a class constructor, not an arrow or async function. ` +
               `Got function '${item.name || 'anonymous'}' without valid prototype.`
           );
         }
-        this.lazyAttachmentClasses.push(item);
+        this.lazyImportClasses.push(item);
       } else {
-        throw new InvalidVaultConfigError(
-          `fuse[${i}] must be a Vault instance or constructor function, got ${typeof item}`
+        throw new InvalidModuleConfigError(
+          `imports[${i}] must be a Vault instance or constructor function, got ${typeof item}`
         );
       }
     }
   }
 
   /**
-   * Validate and process the relics array.
+   * Validate and process the providers array.
    *
    * Each item must be either:
-   * - A constructor function (decorated with @Relic)
+   * - A constructor function (decorated with @Provider)
    * - A Provider object (with provide + useClass/useValue/useFactory)
    *
-   * @throws InvalidVaultConfigError if any item is invalid
+   * @throws InvalidModuleConfigError if any item is invalid
    */
   private _validateAndProcessRelics(relics: Array<Constructor | Provider>): void {
     for (let i = 0; i < relics.length; i++) {
       const item = relics[i];
 
       if (item == null) {
-        throw new InvalidVaultConfigError(
-          `relics[${i}] must be a constructor or Provider object, got ${item}`
+        throw new InvalidModuleConfigError(
+          `providers[${i}] must be a constructor or Provider object, got ${item}`
         );
       }
 
       // Validate provider objects have required properties
       if (typeof item === 'object' && !this._isProvider(item)) {
-        throw new InvalidVaultConfigError(
-          `relics[${i}] must be a constructor or valid Provider object with 'provide' and one of 'useClass'/'useValue'/'useFactory'`
+        throw new InvalidModuleConfigError(
+          `providers[${i}] must be a constructor or valid Provider object with 'provide' and one of 'useClass'/'useValue'/'useFactory'`
         );
       }
 
-      this._registerRelic(item);
+      this._registerProvider(item);
     }
   }
 
   /**
-   * Validate and process the reveal array.
+   * Validate and process the export array.
    *
    * Each item must be a valid Token created with token<T>().
    *
-   * @throws InvalidVaultConfigError if any item is invalid
+   * @throws InvalidModuleConfigError if any item is invalid
    */
   private _validateAndProcessReveal(reveal: Array<Token>): void {
     for (let i = 0; i < reveal.length; i++) {
@@ -353,12 +355,12 @@ export class Vault {
           itemDesc = String(item);
         }
 
-        throw new InvalidVaultConfigError(
-          `reveal[${i}] must be a Token created with token<T>(), got ${itemDesc}`
+        throw new InvalidModuleConfigError(
+          `exports[${i}] must be a Token created with token<T>(), got ${itemDesc}`
         );
       }
 
-      this.revealedTokens.add(item.id);
+      this.exportedTokens.add(item.id);
     }
   }
   // ----- public API (surface used by consumers) -----
@@ -376,20 +378,20 @@ export class Vault {
   }
 
   /**
-   * Check if this vault is configured as an aether host.
+   * Check if this vault is configured as an global module.
    *
-   * Aether vaults expose ALL their relics transitively to descendant vaults in
-   * the fusion hierarchy, bypassing normal reveal-based exposure. This is useful
+   * Global modules expose ALL their providers transitively to descendant vaults in
+   * the fusion hierarchy, bypassing normal export-based exposure. This is useful
    * for creating global/shared service containers.
    *
-   * @returns true if aether mode is enabled, false otherwise
+   * @returns true if global mode is enabled, false otherwise
    */
-  get isAetherHost(): boolean {
-    return this.isAether;
+  get isGlobal(): boolean {
+    return this._isGlobal;
   }
 
   /**
-   * Create a new scope for resolving scoped-lifecycle relics.
+   * Create a new scope for resolving scoped-lifecycle providers.
    *
    * Scopes provide per-request or per-operation isolation for stateful services.
    * Each scope maintains its own cache of scoped instances and automatically
@@ -434,8 +436,8 @@ export class Vault {
    * 1. Check cache for singleton instances
    * 2. Check scope cache for scoped instances (if scope provided)
    * 3. Resolve locally if token is registered in this vault
-   * 4. Resolve from fused vaults (aether or revealed tokens)
-   * 5. Throw RelicNotFoundError if not found
+   * 4. Resolve from imported modules (global or exported tokens)
+   * 5. Throw ProviderNotFoundError if not found
    *
    * Lifecycle behavior:
    * - Singleton: Returns cached instance or creates once and caches
@@ -450,13 +452,13 @@ export class Vault {
    *
    * @param token - Token to resolve (created via token<T>())
    * @param opts - Optional resolution options
-   * @param opts.scope - Scope for scoped-lifecycle relics
+   * @param opts.scope - Scope for scoped-lifecycle providers
    *
    * @returns Instance of type T
    *
    * @throws {InvalidTokenError} If token is not a valid Token object
-   * @throws {RelicNotFoundError} If token is not registered
-   * @throws {VaultDisposedError} If vault has been disposed
+   * @throws {ProviderNotFoundError} If token is not registered
+   * @throws {ContainerDisposedError} If vault has been disposed
    * @throws {LifecycleViolationError} If dependency violates lifecycle rules
    * @throws {CircularDependencyError} If circular dependency detected
    *
@@ -468,6 +470,7 @@ export class Vault {
    */
   resolve<T = unknown>(token: Token<T>, opts?: { scope?: Scope }): T {
     assertValidToken(token); // Dev-only, stripped in production
+    if (this.disposed) throw new ContainerDisposedError(this.name);
     const id = token.id;
 
     // OPTIMIZATION: Extract scope upfront to avoid repeated access
@@ -501,8 +504,7 @@ export class Vault {
     // Local resolution
     const local = this.store.getByCanonical(id);
     if (local !== undefined) {
-      const stack = this.scratchStack;
-      stack.length = 0;
+      const stack: CanonicalId[] = [];
       const out = this.resolverSync.fromEntry<T>(id, stack, scope);
 
       // OPTIMIZATION: Only prime cache if singleton AND not already cached
@@ -514,8 +516,7 @@ export class Vault {
 
     // Cross-vault (cold path)
     this.resolveLazyAttachments();
-    const stack = this.scratchStack;
-    stack.length = 0;
+    const stack: CanonicalId[] = [];
     const x = this._crossVaultSync<T>(id, stack, scope);
     if (x !== undefined) return x;
 
@@ -544,13 +545,13 @@ export class Vault {
    * @param token - Token to resolve (created via token<T>())
    * @param opts - Optional resolution options
    * @param opts.signal - AbortSignal for cancellation
-   * @param opts.scope - Scope for scoped-lifecycle relics
+   * @param opts.scope - Scope for scoped-lifecycle providers
    *
    * @returns Promise resolving to instance of type T
    *
    * @throws {InvalidTokenError} If token is not a valid Token object
-   * @throws {RelicNotFoundError} If token is not registered
-   * @throws {VaultDisposedError} If vault has been disposed
+   * @throws {ProviderNotFoundError} If token is not registered
+   * @throws {ContainerDisposedError} If vault has been disposed
    * @throws {LifecycleViolationError} If dependency violates lifecycle rules
    * @throws {CircularDependencyError} If circular dependency detected
    *
@@ -570,27 +571,28 @@ export class Vault {
     opts?: { signal?: AbortSignal; scope?: Scope }
   ): Promise<T> {
     assertValidToken(token); // Dev-only, stripped in production
+    if (this.disposed) throw new ContainerDisposedError(this.name);
     const stack: CanonicalId[] = [];
 
     // OPTIMIZATION: Extract options upfront to avoid repeated access
     const signal = opts !== undefined ? opts.signal : undefined;
     const scope = opts !== undefined ? opts.scope : undefined;
 
-    return this._resolveRelicAsync<T>(token.id, stack, signal, scope);
+    return this._resolveProviderAsync<T>(token.id, stack, signal, scope);
   }
 
   /**
    * Check if a token can be resolved without actually instantiating it.
    *
    * ⚠️ SIDE EFFECTS: This method triggers lazy attachment resolution, which:
-   * - Materializes lazy-fused vault classes
+   * - Materializes lazy-imported vault classes
    * - Recomputes cross-vault exposure indices
    * - Validates circular attachment detection
    * - Enforces shadow policy
    *
    * Use this method when you need to conditionally resolve tokens based on
    * availability. For unconditional resolution, use resolve() directly and
-   * catch RelicNotFoundError.
+   * catch ProviderNotFoundError.
    *
    * @param token - Token to check for resolvability
    * @returns true if the token can be resolved (locally or via fusion)
@@ -630,8 +632,8 @@ export class Vault {
     this.resolveLazyAttachments();
 
     // Check cross-vault exposure
-    if (this.exposure.aetherMap.has(canonical)) return true;
-    if (this.exposure.revealedMap.has(canonical)) return true;
+    if (this.exposure.globalMap.has(canonical)) return true;
+    if (this.exposure.exportedMap.has(canonical)) return true;
 
     return false;
   }
@@ -789,7 +791,7 @@ export class Vault {
   /**
    * Get snapshot of all materialized singleton instances.
    *
-   * Returns a Map of currently instantiated singleton relics. This is useful for:
+   * Returns a Map of currently instantiated singleton providers. This is useful for:
    * - Debugging: See which singletons have been created
    * - Testing: Verify singleton state
    * - Monitoring: Track active instances
@@ -821,7 +823,7 @@ export class Vault {
    * Check if a token is registered locally in this vault.
    *
    * This checks only local registrations, not tokens accessible via fusion.
-   * Use canResolve() to check if a token can be resolved (including fused tokens).
+   * Use canResolve() to check if a token can be resolved (including imported tokens).
    *
    * @param token - Canonical token ID to check
    * @returns true if token is registered locally, false otherwise
@@ -839,24 +841,24 @@ export class Vault {
   }
 
   /**
-   * Check if a token was explicitly revealed by this vault.
+   * Check if a token was explicitly exported by this vault.
    *
-   * Revealed tokens are accessible to other vaults that fuse to this one.
-   * This is different from aether mode, which exposes all tokens transitively.
+   * Exported tokens are accessible to other vaults that fuse to this one.
+   * This is different from global mode, which exposes all tokens transitively.
    *
    * @param token - Canonical token ID to check
-   * @returns true if token was included in the reveal array, false otherwise
+   * @returns true if token was included in the export array, false otherwise
    *
    * @example
    * ```typescript
    * if (vault.isExposed('tok_123')) {
-   *   console.log('Token is available to fused vaults');
+   *   console.log('Token is available to imported modules');
    * }
    * ```
    */
   isExposed(token: string): boolean {
     const canonical = this._hasLocalEntry(token);
-    return !!canonical && this.revealedTokens.has(canonical);
+    return !!canonical && this.exportedTokens.has(canonical);
   }
 
   /** @internal */
@@ -868,38 +870,38 @@ export class Vault {
 
   /** Guard to prevent late registration after finalization. */
   private _assertNotSealed() {
-    if (this.entriesSealed) throw new InvalidVaultConfigError('registration after finalize');
+    if (this.entriesSealed) throw new InvalidModuleConfigError('registration after finalize');
   }
 
   /**
    * Top-level registrar that dispatches provider shapes to specialized handlers.
    *
    * Handles three registration forms:
-   *  - Constructor decorated with @Relic() → _registerClass()
+   *  - Constructor decorated with @Provider() → _registerClass()
    *  - Provider object with useClass → _registerClassProvider()
    *  - Provider object with useValue → _registerValueProvider()
    *  - Provider object with useFactory → _registerFactoryProvider()
    */
-  private _registerRelic(relic: Constructor | Provider): void {
+  private _registerProvider(provider: Constructor | Provider): void {
     this._assertNotSealed();
-    if (typeof relic === 'function') {
-      this._registerClass(relic);
+    if (typeof provider === 'function') {
+      this._registerClass(provider);
       return;
     }
 
-    if (!this._isProvider(relic)) throw new InvalidProviderError(relic);
+    if (!this._isProvider(provider)) throw new InvalidProviderError(provider);
 
-    if ('useClass' in relic) return void this._registerClassProvider(relic);
-    if ('useValue' in relic) return void this._registerValueProvider(relic);
-    if ('useFactory' in relic) return void this._registerFactoryProvider(relic);
+    if ('useClass' in provider) return void this._registerClassProvider(provider);
+    if ('useValue' in provider) return void this._registerValueProvider(provider);
+    if ('useFactory' in provider) return void this._registerFactoryProvider(provider);
 
-    throw new InvalidProviderError(relic);
+    throw new InvalidProviderError(provider);
   }
 
   /**
-   * Register a class decorated with @Relic (requires decorator metadata).
+   * Register a class decorated with @Provider (requires decorator metadata).
    *
-   * Extracts metadata from the StaticRelicRegistry (populated by @Relic decorator)
+   * Extracts metadata from the MetadataRegistry (populated by @Provider decorator)
    * and converts the lifecycle string to a bit flag for fast runtime checks.
    *
    * Lifecycle conversion:
@@ -912,7 +914,7 @@ export class Vault {
    */
   private _registerClass(ctor: Constructor): void {
     const def = this._getDefinition(ctor);
-    if (!def) throw new MissingRelicDecoratorError(ctor.name);
+    if (!def) throw new MissingInjectableDecoratorError(ctor.name);
 
     // Convert lifecycle string to bit flag (one-time cost at registration)
     const lifecycleFlag = lifecycleToFlag(def.metadata.lifecycle);
@@ -947,7 +949,7 @@ export class Vault {
    *
    * Lifecycle priority:
    *  1. provider.lifecycle (explicit override)
-   *  2. def.metadata.lifecycle (from @Relic decorator if present)
+   *  2. def.metadata.lifecycle (from @Provider decorator if present)
    *  3. Lifecycle.Singleton (default)
    */
   private _registerClassProvider(provider: ClassProvider): void {
@@ -958,7 +960,7 @@ export class Vault {
     // Lifecycle resolution: provider override > decorator metadata > default singleton
     const lifecycle = provider.lifecycle ?? def?.metadata.lifecycle ?? Lifecycle.Singleton;
     const lifecycleFlag = lifecycleToFlag(lifecycle);
-    const metadata: RelicMetadata = { name: canonical, label: token.label, lifecycle };
+    const metadata: ProviderMetadata = { name: canonical, label: token.label, lifecycle };
 
     const deps = def ? def.dependencies : EMPTY_DEPS;
     const hasNoDeps = deps.length === 0;
@@ -998,7 +1000,7 @@ export class Vault {
     const ctor = (provider.useValue as { constructor?: Constructor })?.constructor;
     const canonical = token.id;
 
-    const metadata: RelicMetadata = {
+    const metadata: ProviderMetadata = {
       name: canonical,
       label: token.label,
       lifecycle: Lifecycle.Singleton,
@@ -1050,7 +1052,7 @@ export class Vault {
 
     const lifecycle = provider.lifecycle ?? Lifecycle.Singleton;
     const lifecycleFlag = lifecycleToFlag(lifecycle);
-    const metadata: RelicMetadata = { name: canonical, label: token.label, lifecycle };
+    const metadata: ProviderMetadata = { name: canonical, label: token.label, lifecycle };
 
     const entry: Entry = {
       token: canonical,
@@ -1073,7 +1075,7 @@ export class Vault {
    *
    * This checks consumer -> dependency lifecycle relationships when the
    * dependency is already registered in the same vault. If a dependency is
-   * not present yet (deferred registration or fused exposure) we skip
+   * not present yet (deferred registration or imported exposure) we skip
    * validation; it will be validated when that dependency gets registered.
    */
   private _validateDependencyLifecyclesForEntry(entry: Entry): void {
@@ -1118,7 +1120,7 @@ export class Vault {
 
   /** Find a cross-vault exposure entry for token if any. */
   private _findCrossVaultEntry(token: CanonicalId) {
-    return this.exposure.aetherMap.get(token) ?? this.exposure.revealedMap.get(token);
+    return this.exposure.globalMap.get(token) ?? this.exposure.exportedMap.get(token);
   }
 
   /** Shared logic for cross-vault synchronous lookups. */
@@ -1175,7 +1177,7 @@ export class Vault {
    * @param token - The token being resolved
    * @param stack - Current dependency resolution stack (for error reporting)
    */
-  private _validateLifecycleRules(token: CanonicalId, stack: CanonicalId[]): void {
+  _validateLifecycleRules(token: CanonicalId, stack: CanonicalId[]): void {
     if (stack.length === 0) return; // No parent to validate against
 
     const entry = this.store.getByCanonical(token);
@@ -1287,7 +1289,7 @@ export class Vault {
    *
    * OPTIMIZED: Inline cache check with precomputed masks, simplified local resolution
    */
-  _resolveRelic<T>(token: CanonicalId, stack: CanonicalId[], scope?: Scope): T {
+  _resolveProvider<T>(token: CanonicalId, stack: CanonicalId[], scope?: Scope): T {
     // Step 1: Check singleton cache
     const cachedInstance = this._tryGetFromSingletonCache<T>(token);
     if (cachedInstance !== undefined) return cachedInstance;
@@ -1373,7 +1375,7 @@ export class Vault {
    *
    * OPTIMIZED: Inline cache check with precomputed masks, simplified local resolution
    */
-  async _resolveRelicAsync<T>(
+  async _resolveProviderAsync<T>(
     token: CanonicalId,
     stack: CanonicalId[],
     signal?: AbortSignal,
@@ -1404,24 +1406,24 @@ export class Vault {
   // ----- attachments / indices -----
 
   /**
-   * Lazily materialize fused vaults. The method is idempotent and supports
-   * rollback: on error we restore the fusedVaults array to its previous length
+   * Lazily materialize imported modules. The method is idempotent and supports
+   * rollback: on error we restore the importedModules array to its previous length
    * and reset the resolving flag so future attempts can retry.
    */
   private resolveLazyAttachments(): void {
-    if (this.lazyAttachmentsResolved) return;
+    if (this.lazyImportsResolved) return;
 
-    for (const cls of this.lazyAttachmentClasses) {
-      this.fusedVaults.push(this.lazyResolver!(cls));
+    for (const cls of this.lazyImportClasses) {
+      this.importedModules.push(this.lazyResolver!(cls));
     }
 
-    this._checkCircularAttachment(this.fusedVaults, [this.name], new Set([this]));
+    this._checkCircularAttachment(this.importedModules, [this.name], new Set([this]));
     this.exposure.compute(this);
-    this.lazyAttachmentsResolved = true;
+    this.lazyImportsResolved = true;
   }
 
   /**
-   * DFS cycle detection for fused vaults.
+   * DFS cycle detection for imported modules.
    *
    * This method uses a stack-based DFS with path mutation to avoid allocating
    * new arrays on each iteration. The path array is mutated in place and
@@ -1445,14 +1447,14 @@ export class Vault {
     for (const v of vaults) {
       if (stack.has(v)) {
         // Cycle detected - allocate error path (cold path)
-        throw new CircularVaultAttachmentError([...path, v.name]);
+        throw new CircularModuleAttachmentError([...path, v.name]);
       }
 
       // Hot path - mutate arrays instead of allocating
       stack.add(v);
       path.push(v.name);
       try {
-        v._checkCircularAttachment(v.fusedVaults, path, stack);
+        v._checkCircularAttachment(v.importedModules, path, stack);
       } finally {
         // Restore state for backtracking
         path.pop();
@@ -1473,11 +1475,11 @@ export class Vault {
   }
 
   /**
-   * Per-vault definition lookup. Uses StaticRelicRegistry.buildDefinition to
+   * Per-vault definition lookup. Uses MetadataRegistry.buildDefinition to
    * avoid auto-presealing global state and caches the result in the vault.
    */
-  private _getDefinition(ctor: Constructor): StaticRelicDefinition | undefined {
-    return StaticRelicRegistry.buildDefinition(ctor);
+  private _getDefinition(ctor: Constructor): StaticProviderDefinition | undefined {
+    return MetadataRegistry.buildDefinition(ctor);
   }
 
   private _hasLocalEntry(token: string): CanonicalId | undefined {
@@ -1494,7 +1496,7 @@ export class Vault {
    * - 'error': Collect ALL violations and throw MultipleShadowPolicyViolationsError
    *
    * This method validates that local registrations don't conflict with exposed
-   * tokens from fused vaults, helping prevent accidental token shadowing that
+   * tokens from imported modules, helping prevent accidental token shadowing that
    * could lead to unexpected behavior.
    */
   private _enforceShadowPolicy(): void {
@@ -1523,7 +1525,7 @@ export class Vault {
    * Collect all shadow policy violations.
    *
    * A violation occurs when a token is registered locally AND exposed by one or
-   * more fused vaults (via aether or reveal). This creates ambiguity about which
+   * more imported modules (via global or export). This creates ambiguity about which
    * implementation should be used.
    *
    * @returns Array of violations with token info and producer vault names
@@ -1565,7 +1567,7 @@ export class Vault {
       else incoming.set(canonical, [from.getName()]);
     };
 
-    for (const map of [this.exposure.aetherMap, this.exposure.revealedMap]) {
+    for (const map of [this.exposure.globalMap, this.exposure.exportedMap]) {
       for (const [, { canonical, vault }] of map) add(canonical, vault);
     }
 
@@ -1592,9 +1594,9 @@ export class Vault {
    *
    * @param token - The token that could not be resolved
    * @param stack - Dependency chain (canonical IDs) leading to this token
-   * @returns RelicNotFoundError with formatted chain and suggestions
+   * @returns ProviderNotFoundError with formatted chain and suggestions
    */
-  buildNotFoundError(token: CanonicalId, stack: CanonicalId[]): RelicNotFoundError {
+  buildNotFoundError(token: CanonicalId, stack: CanonicalId[]): ProviderNotFoundError {
     const tokenName = this._formatTokenForDiagnostics(token);
     const available = this._getAvailableTokens().map((t) => this._formatTokenForDiagnostics(t));
 
@@ -1606,7 +1608,7 @@ export class Vault {
       .map((canonical) => this._formatTokenForDiagnostics(canonical))
       .filter((formatted): formatted is string => Boolean(formatted));
 
-    return new RelicNotFoundError(tokenName, available, chain.length > 0 ? chain : undefined);
+    return new ProviderNotFoundError(tokenName, available, chain.length > 0 ? chain : undefined);
   }
 
   /** Compile available local + cross-vault tokens for diagnostics. */
@@ -1614,7 +1616,7 @@ export class Vault {
     const tokens = new Set<CanonicalId>();
     for (const k of this.store.canonicalKeys()) tokens.add(k);
     this.resolveLazyAttachments();
-    for (const map of [this.exposure.aetherMap, this.exposure.revealedMap]) {
+    for (const map of [this.exposure.globalMap, this.exposure.exportedMap]) {
       for (const { canonical } of map.values()) tokens.add(canonical);
     }
     return Array.from(tokens).sort();
@@ -1629,7 +1631,7 @@ export class Vault {
     const local = this.store.getByCanonical(canonical);
     if (local) return `${local.metadata.label} [${canonical}]`;
 
-    for (const map of [this.exposure.aetherMap, this.exposure.revealedMap]) {
+    for (const map of [this.exposure.globalMap, this.exposure.exportedMap]) {
       const hit = map.get(canonical);
       if (hit) {
         const entry = hit.vault.store.getByCanonical(hit.canonical);

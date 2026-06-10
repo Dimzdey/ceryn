@@ -34,7 +34,7 @@
  */
 
 import { CircularDependencyError, ScopedWithoutScopeError } from '../errors/errors.js';
-import type { Disposable } from '../types';
+import type { Disposable } from '../types/index.js';
 import type { Activator } from './activator.js';
 import {
   FLAG_HAS_INSTANCE,
@@ -48,9 +48,12 @@ import type { Vault } from './vault.js';
 
 /**
  * Convert an AbortSignal into a Promise that rejects with an AbortError when
- * the signal fires. Returns `null` when no signal is provided. The returned
- * promise is intended for use with Promise.race to implement per-caller
- * cancellation semantics.
+ * the signal fires. Returns `null` when no signal is provided.
+ *
+ * Note: The returned Promise (and its closure) stays in memory until the signal
+ * fires or the signal itself is GC'd. This is inherent to the Promise.race
+ * cancellation pattern and is minimal overhead (one closure per in-flight
+ * async resolve). The event listener self-removes via the handler logic.
  */
 function abortAsPromise(signal?: AbortSignal) {
   if (!signal) return null;
@@ -135,6 +138,9 @@ export class ResolverAsync {
     try {
       // Extract lifecycle bits once for multiple checks (performance optimization)
       const lifecycleFlags = entry.flags & LIFECYCLE_MASK;
+
+      // Validate lifecycle rules at resolution time (catches order-independent violations)
+      this.vault._validateLifecycleRules(canonical, stack);
 
       // Singleton lifecycle: Share promise across concurrent requests
       // Lifecycle check: bits 0-1 are 0b00 (LIFECYCLE_SINGLETON)

@@ -1,3 +1,3 @@
-export * from './relic';
-export * from './summon';
-export * from './vault';
+export * from './injectable.js';
+export * from './inject.js';
+export * from './module.js';

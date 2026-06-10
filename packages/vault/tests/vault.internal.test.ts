@@ -3,21 +3,21 @@ import { beforeEach, describe, expect, it } from 'vitest';
 import type { Entry } from '../src/core/entry-store.js';
 import { token } from '../src/core/token.js';
 import { Vault } from '../src/core/vault.js';
-import { Relic, Vault as VaultDecorator } from '../src/decorators/index.js';
+import { Injectable, Module as ModuleDecorator } from '../src/decorators/index.js';
 import { LifecycleViolationError } from '../src/errors/errors.js';
-import { StaticRelicRegistry } from '../src/registry/static-registry.js';
-import { Lifecycle, type DecoratedVaultClass } from '../src/types/types.js';
+import { MetadataRegistry } from '../src/registry/metadata-registry.js';
+import { Lifecycle, type DecoratedModuleClass } from '../src/types/types.js';
 
 beforeEach(() => {
-  StaticRelicRegistry.resetForTests();
+  MetadataRegistry.resetForTests();
 });
 
 describe('Vault internal coverage', () => {
   it('exposes decorated constructor via getVaultClass()', () => {
-    @VaultDecorator()
+    @ModuleDecorator()
     class DecoratedVault {}
 
-    const vault = new Vault(DecoratedVault as DecoratedVaultClass);
+    const vault = new Vault(DecoratedVault as DecoratedModuleClass);
     expect(vault.getVaultClass()).toBe(DecoratedVault);
   });
 
@@ -25,18 +25,18 @@ describe('Vault internal coverage', () => {
     const ClassToken = token('ClassToken');
     const AsyncToken = token('AsyncToken');
 
-    @Relic({ provide: ClassToken })
-    class ClassRelic {}
+    @Injectable({ provide: ClassToken })
+    class ClassInjectable {}
 
     const vault = new Vault({
-      relics: [
-        { provide: ClassToken, useClass: ClassRelic },
+      providers: [
+        { provide: ClassToken, useClass: ClassInjectable },
         { provide: AsyncToken, useFactory: async () => 'async-value' },
       ],
     });
 
     const scope = vault.createScope();
-    expect(scope.resolve(ClassToken)).toBeInstanceOf(ClassRelic);
+    expect(scope.resolve(ClassToken)).toBeInstanceOf(ClassInjectable);
     await expect(scope.resolveAsync(AsyncToken)).resolves.toBe('async-value');
   });
 
@@ -44,13 +44,13 @@ describe('Vault internal coverage', () => {
     const SharedToken = token('SharedAsync');
 
     const fused = new Vault({
-      relics: [{ provide: SharedToken, useFactory: async () => 'shared' }],
-      reveal: [SharedToken],
+      providers: [{ provide: SharedToken, useFactory: async () => 'shared' }],
+      exports: [SharedToken],
     });
 
     const host = new Vault({
-      relics: [],
-      fuse: [fused],
+      providers: [],
+      imports: [fused],
     });
 
     await expect(host.resolveAsync(SharedToken)).resolves.toBe('shared');

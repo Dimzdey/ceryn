@@ -1,13 +1,13 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { StaticRelicRegistry } from '../src/registry/static-registry.js';
+import { MetadataRegistry } from '../src/registry/metadata-registry.js';
 
 const originalEnv = process.env.NODE_ENV;
 
 describe('Production environment branches', () => {
   afterEach(() => {
     process.env.NODE_ENV = originalEnv;
-    StaticRelicRegistry.resetForTests();
+    MetadataRegistry.resetForTests();
     vi.resetModules();
   });
 
@@ -15,8 +15,8 @@ describe('Production environment branches', () => {
     process.env.NODE_ENV = 'production';
     vi.resetModules();
 
-    const { Relic: ProdRelic } = await import('../src/decorators/relic.js');
-    const { Summon } = await import('../src/decorators/summon.js');
+    const { Injectable: ProdInjectable } = await import('../src/decorators/injectable.js');
+    const { Inject } = await import('../src/decorators/inject.js');
     const { Vault: ProdVault } = await import('../src/core/vault.js');
     const { token } = await import('../src/core/token.js');
     const { InvalidProviderError, FactoryExecutionError, AggregateDisposalError } = await import(
@@ -26,15 +26,15 @@ describe('Production environment branches', () => {
     const TokenA = token('ProdA');
     const TokenB = token('ProdB');
 
-    @ProdRelic({ provide: TokenB })
-    class RelicB {}
+    @ProdInjectable({ provide: TokenB })
+    class ProviderB {}
 
-    @ProdRelic({ provide: TokenA })
-    class RelicA {
-      constructor(@Summon(TokenB) _dep: RelicB) {}
+    @ProdInjectable({ provide: TokenA })
+    class ProviderA {
+      constructor(@Inject(TokenB) _dep: ProviderB) {}
     }
 
-    const vault = new ProdVault({ relics: [RelicB, RelicA] });
+    const vault = new ProdVault({ providers: [ProviderB, ProviderA] });
     expect(() => vault.resolve({} as never)).toThrow(); // assertValidToken no-op
     expect(() => vault.resolve(TokenA)).not.toThrow();
 

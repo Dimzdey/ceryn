@@ -2,7 +2,7 @@ import { beforeEach, describe, expect, it } from 'vitest';
 
 import { token } from '../src/core/token.js';
 import type { CanonicalId } from '../src/index.js';
-import { StaticRelicRegistry } from '../src/registry/static-registry.js';
+import { MetadataRegistry } from '../src/registry/metadata-registry.js';
 import { Lifecycle, type Constructor } from '../src/types/types.js';
 
 const metadata = (name: CanonicalId, label: string) => ({
@@ -11,69 +11,72 @@ const metadata = (name: CanonicalId, label: string) => ({
   lifecycle: Lifecycle.Singleton,
 });
 
-describe('StaticRelicRegistry', () => {
+describe('MetadataRegistry', () => {
   beforeEach(() => {
-    StaticRelicRegistry.resetForTests();
+    MetadataRegistry.resetForTests();
   });
 
-  it('records relic metadata and summon dependencies', () => {
-    class RelicA {}
-    const provide = token('RelicA');
+  it('records provider metadata and injection dependencies', () => {
+    class ProviderA {}
+    const provide = token('ProviderA');
     const dep = token('DepA');
 
-    StaticRelicRegistry.registerRelic(RelicA as Constructor, metadata(provide.id, 'RelicA'));
-    StaticRelicRegistry.registerSummon(RelicA as Constructor, 2, dep);
+    MetadataRegistry.registerProvider(ProviderA as Constructor, metadata(provide.id, 'ProviderA'));
+    MetadataRegistry.registerInjection(ProviderA as Constructor, 2, dep);
 
-    const def = StaticRelicRegistry.buildDefinition(RelicA as Constructor);
+    const def = MetadataRegistry.buildDefinition(ProviderA as Constructor);
 
     expect(def).toBeDefined();
-    expect(def?.ctor).toBe(RelicA);
-    expect(def?.metadata).toMatchObject({ name: provide.id, label: 'RelicA' });
+    expect(def?.ctor).toBe(ProviderA);
+    expect(def?.metadata).toMatchObject({ name: provide.id, label: 'ProviderA' });
     expect(def?.dependencies).toHaveLength(3);
     expect(def?.dependencies?.[2]).toBe(dep.id);
   });
 
-  it('creates fallback metadata when summon is used without relic decorator', () => {
-    class RelicB {}
+  it('creates fallback metadata when injection is used without injectable decorator', () => {
+    class ProviderB {}
     const dep = token('DepB');
 
-    StaticRelicRegistry.registerSummon(RelicB as Constructor, 0, dep);
-    const def = StaticRelicRegistry.buildDefinition(RelicB as Constructor);
+    MetadataRegistry.registerInjection(ProviderB as Constructor, 0, dep);
+    const def = MetadataRegistry.buildDefinition(ProviderB as Constructor);
 
     expect(def).toBeDefined();
     expect(def?.metadata.name.startsWith('fallback:')).toBe(true);
     expect(def?.dependencies).toEqual([dep.id]);
   });
 
-  it('seals definitions and recomputes when relic re-registers', () => {
-    class RelicC {}
-    const provide = token('RelicC');
+  it('seals definitions and recomputes when provider re-registers', () => {
+    class ProviderC {}
+    const provide = token('ProviderC');
 
-    StaticRelicRegistry.registerRelic(RelicC as Constructor, metadata(provide.id, 'RelicC'));
-    StaticRelicRegistry.sealAll();
+    MetadataRegistry.registerProvider(ProviderC as Constructor, metadata(provide.id, 'ProviderC'));
+    MetadataRegistry.sealAll();
 
-    const initial = StaticRelicRegistry.buildDefinition(RelicC as Constructor);
-    expect(initial?.metadata.label).toBe('RelicC');
+    const initial = MetadataRegistry.buildDefinition(ProviderC as Constructor);
+    expect(initial?.metadata.label).toBe('ProviderC');
 
-    StaticRelicRegistry.registerRelic(RelicC as Constructor, metadata(provide.id, 'UpdatedLabel'));
-    const updated = StaticRelicRegistry.buildDefinition(RelicC as Constructor);
+    MetadataRegistry.registerProvider(
+      ProviderC as Constructor,
+      metadata(provide.id, 'UpdatedLabel')
+    );
+    const updated = MetadataRegistry.buildDefinition(ProviderC as Constructor);
 
     expect(updated?.metadata.label).toBe('UpdatedLabel');
   });
 
   it('supports namespaced bags and reset()', () => {
-    class RelicD {}
-    const tokenD = token('RelicD');
+    class ProviderD {}
+    const tokenD = token('ProviderD');
 
-    StaticRelicRegistry.registerRelic(RelicD as Constructor, metadata(tokenD.id, 'RelicD'));
-    expect(StaticRelicRegistry.buildDefinition(RelicD as Constructor)).toBeDefined();
+    MetadataRegistry.registerProvider(ProviderD as Constructor, metadata(tokenD.id, 'ProviderD'));
+    expect(MetadataRegistry.buildDefinition(ProviderD as Constructor)).toBeDefined();
 
-    StaticRelicRegistry.reset();
-    expect(StaticRelicRegistry.buildDefinition(RelicD as Constructor)).toBeUndefined();
+    MetadataRegistry.reset();
+    expect(MetadataRegistry.buildDefinition(ProviderD as Constructor)).toBeUndefined();
 
-    StaticRelicRegistry.reset('spec');
-    const ns = StaticRelicRegistry.getBag('spec');
-    expect(ns).not.toBe(StaticRelicRegistry.getBag());
+    MetadataRegistry.reset('spec');
+    const ns = MetadataRegistry.getBag('spec');
+    expect(ns).not.toBe(MetadataRegistry.getBag());
   });
 
   it('upgrades legacy global registry records', () => {
@@ -81,7 +84,7 @@ describe('StaticRelicRegistry', () => {
     const legacy = { relics: new WeakMap(), keys: new Set(), sealedAll: false };
     (globalThis as { [key: symbol]: unknown })[globalSymbol] = legacy;
 
-    const bag = StaticRelicRegistry.getBag();
+    const bag = MetadataRegistry.getBag();
     expect(bag.relics).toBeInstanceOf(WeakMap);
 
     const store = (globalThis as { [key: symbol]: unknown })[globalSymbol] as {
@@ -90,7 +93,7 @@ describe('StaticRelicRegistry', () => {
     };
     expect(store.defaultBag).toBe(legacy);
 
-    StaticRelicRegistry.reset('legacy');
+    MetadataRegistry.reset('legacy');
     expect(store.namespaces.has('legacy')).toBe(true);
   });
 });

@@ -2,23 +2,23 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { token } from '../src/core/token.js';
 import { Vault } from '../src/core/vault.js';
-import { Relic, Summon } from '../src/decorators/index.js';
+import { Injectable, Inject } from '../src/decorators/index.js';
 import {
   AggregateDisposalError,
-  CircularVaultAttachmentError,
+  CircularModuleAttachmentError,
   FactoryExecutionError,
   InvalidTokenError,
   LifecycleViolationError,
   MultipleShadowPolicyViolationsError,
-  RelicNotFoundError,
+  ProviderNotFoundError,
   ScopedWithoutScopeError,
 } from '../src/errors/errors.js';
-import { StaticRelicRegistry } from '../src/registry/static-registry.js';
+import { MetadataRegistry } from '../src/registry/metadata-registry.js';
 import { Lifecycle } from '../src/types/types.js';
 
 describe('Vault integration', () => {
   beforeEach(() => {
-    StaticRelicRegistry.resetForTests();
+    MetadataRegistry.resetForTests();
     Vault.setDefaultLazyResolver(undefined);
   });
 
@@ -28,22 +28,22 @@ describe('Vault integration', () => {
     const ConfigToken = token('Config');
     const instantiateHook = vi.fn();
 
-    @Relic({ provide: BarToken })
+    @Injectable({ provide: BarToken })
     class Bar {
       value = Math.random();
     }
 
-    @Relic({ provide: FooToken })
+    @Injectable({ provide: FooToken })
     class Foo {
       constructor(
-        @Summon(BarToken) public readonly bar: Bar,
-        @Summon(ConfigToken) public readonly config: { base: string }
+        @Inject(BarToken) public readonly bar: Bar,
+        @Inject(ConfigToken) public readonly config: { base: string }
       ) {}
     }
 
     const vault = new Vault({
       name: 'AppVault',
-      relics: [
+      providers: [
         Bar,
         Foo,
         {
@@ -51,7 +51,7 @@ describe('Vault integration', () => {
           useValue: { base: 'v1' },
         },
       ],
-      reveal: [FooToken],
+      exports: [FooToken],
       onInstantiate: instantiateHook,
     });
 
@@ -86,7 +86,7 @@ describe('Vault integration', () => {
 
     const disposed: unknown[] = [];
 
-    @Relic({ provide: ScopedToken, lifecycle: Lifecycle.Scoped })
+    @Injectable({ provide: ScopedToken, lifecycle: Lifecycle.Scoped })
     class ScopedService {
       dispose() {
         disposed.push(this);
@@ -94,12 +94,12 @@ describe('Vault integration', () => {
     }
 
     let transientCounter = 0;
-    @Relic({ provide: TransientToken, lifecycle: Lifecycle.Transient })
+    @Injectable({ provide: TransientToken, lifecycle: Lifecycle.Transient })
     class TransientService {
       readonly id = ++transientCounter;
     }
 
-    const vault = new Vault({ relics: [ScopedService, TransientService] });
+    const vault = new Vault({ providers: [ScopedService, TransientService] });
 
     const scopeA = vault.createScope();
     const scopeB = vault.createScope();
@@ -129,7 +129,7 @@ describe('Vault integration', () => {
     const AbortableToken = token('Abortable');
 
     const vault = new Vault({
-      relics: [
+      providers: [
         {
           provide: SyncFactoryToken,
           useFactory: () => ({ created: Symbol('sync') }),
@@ -187,25 +187,25 @@ describe('Vault integration', () => {
     const SharedToken = token('Shared');
     const LocalToken = token('Local');
 
-    @Relic({ provide: SharedToken })
+    @Injectable({ provide: SharedToken })
     class SharedRelic {}
 
-    @Relic({ provide: LocalToken })
+    @Injectable({ provide: LocalToken })
     class LocalRelic {
-      constructor(@Summon(SharedToken) public readonly shared: SharedRelic) {}
+      constructor(@Inject(SharedToken) public readonly shared: SharedRelic) {}
     }
 
     const sharedVault = new Vault({
       name: 'SharedVault',
-      relics: [SharedRelic],
-      reveal: [SharedToken],
+      providers: [SharedRelic],
+      exports: [SharedToken],
     });
 
     const appVault = new Vault({
       name: 'AppVault',
-      relics: [LocalRelic],
-      fuse: [sharedVault],
-      reveal: [LocalToken],
+      providers: [LocalRelic],
+      imports: [sharedVault],
+      exports: [LocalToken],
     });
 
     expect(appVault.canResolve(LocalToken)).toBe(true);
@@ -228,7 +228,7 @@ describe('Vault integration', () => {
     const asyncDispose = vi.fn(() => Promise.resolve());
 
     const vault = new Vault({
-      relics: [
+      providers: [
         { provide: DisposableToken, useValue: { dispose: throwingDispose } },
         { provide: AsyncDisposableToken, useValue: { dispose: asyncDispose } },
       ],
@@ -250,36 +250,36 @@ describe('Vault integration', () => {
     const TransientToken = token('TransientDep');
     const SingletonToken = token('BadSingleton');
 
-    @Relic({ provide: TransientToken, lifecycle: Lifecycle.Transient })
+    @Injectable({ provide: TransientToken, lifecycle: Lifecycle.Transient })
     class TransientDep {}
 
-    @Relic({ provide: SingletonToken, lifecycle: Lifecycle.Singleton })
+    @Injectable({ provide: SingletonToken, lifecycle: Lifecycle.Singleton })
     class BadSingleton {
-      constructor(@Summon(TransientToken) _dep: TransientDep) {}
+      constructor(@Inject(TransientToken) _dep: TransientDep) {}
     }
 
-    expect(() => new Vault({ relics: [TransientDep, BadSingleton] })).toThrow(
+    expect(() => new Vault({ providers: [TransientDep, BadSingleton] })).toThrow(
       LifecycleViolationError
     );
   });
 
-  it('produces detailed RelicNotFoundError dependency chains', () => {
+  it('produces detailed ProviderNotFoundError dependency chains', () => {
     const NeedsMissingToken = token('NeedsMissing');
     const MissingToken = token('Missing');
 
-    @Relic({ provide: NeedsMissingToken })
+    @Injectable({ provide: NeedsMissingToken })
     class NeedsMissing {
-      constructor(@Summon(MissingToken) _missing: unknown) {}
+      constructor(@Inject(MissingToken) _missing: unknown) {}
     }
 
-    const vault = new Vault({ relics: [NeedsMissing] });
+    const vault = new Vault({ providers: [NeedsMissing] });
 
     try {
       vault.resolve(NeedsMissingToken);
       expect.fail('Expected resolve to throw');
     } catch (error) {
-      expect(error).toBeInstanceOf(RelicNotFoundError);
-      if (error instanceof RelicNotFoundError) {
+      expect(error).toBeInstanceOf(ProviderNotFoundError);
+      if (error instanceof ProviderNotFoundError) {
         expect(error.dependencyChain).toEqual(
           expect.arrayContaining([expect.stringContaining('NeedsMissing [tok_')])
         );
@@ -290,7 +290,7 @@ describe('Vault integration', () => {
   it('validates canResolve input tokens', () => {
     const TokenA = token('TokenA');
 
-    const vault = new Vault({ relics: [] });
+    const vault = new Vault({ providers: [] });
     expect(vault.canResolve(TokenA)).toBe(false);
 
     expect(() => vault.canResolve({} as never)).toThrow(InvalidTokenError);
@@ -307,7 +307,7 @@ describe('Vault integration', () => {
     );
 
     const vault = new Vault({
-      relics: [
+      providers: [
         {
           provide: AsyncSingletonToken,
           lifecycle: Lifecycle.Singleton,
@@ -342,7 +342,7 @@ describe('Vault integration', () => {
     }));
 
     const vault = new Vault({
-      relics: [
+      providers: [
         {
           provide: AsyncScopedToken,
           lifecycle: Lifecycle.Scoped,
@@ -375,7 +375,7 @@ describe('Vault integration', () => {
     const factory = vi.fn(async () => 'never');
 
     const vault = new Vault({
-      relics: [
+      providers: [
         {
           provide: AbortToken,
           lifecycle: Lifecycle.Transient,
@@ -403,7 +403,7 @@ describe('Vault integration', () => {
       .mockResolvedValue('success');
 
     const vault = new Vault({
-      relics: [
+      providers: [
         {
           provide: RetryToken,
           lifecycle: Lifecycle.Singleton,
@@ -421,16 +421,16 @@ describe('Vault integration', () => {
     const vaultA = new Vault({ name: 'VaultA' });
     const vaultB = new Vault({ name: 'VaultB' });
 
-    vaultA.fusedVaults.push(vaultB);
-    vaultB.fusedVaults.push(vaultA);
+    vaultA.importedModules.push(vaultB);
+    vaultB.importedModules.push(vaultA);
 
     const checker = vaultA as unknown as {
       _checkCircularAttachment: (vaults: Vault[], path: string[], stack: Set<Vault>) => void;
     };
 
     expect(() =>
-      checker._checkCircularAttachment(vaultA.fusedVaults, ['VaultA'], new Set([vaultA]))
-    ).toThrow(CircularVaultAttachmentError);
+      checker._checkCircularAttachment(vaultA.importedModules, ['VaultA'], new Set([vaultA]))
+    ).toThrow(CircularModuleAttachmentError);
   });
 
   it('enforces shadow policy for conflicting exposures', () => {
@@ -438,43 +438,38 @@ describe('Vault integration', () => {
 
     const producer = new Vault({
       name: 'Producer',
-      relics: [{ provide: ShadowToken, useValue: { source: 'producer' } }],
-      reveal: [ShadowToken],
+      providers: [{ provide: ShadowToken, useValue: { source: 'producer' } }],
+      exports: [ShadowToken],
     });
 
-    const warnVault = new Vault({
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    new Vault({
       name: 'WarnVault',
-      relics: [{ provide: ShadowToken, useValue: { source: 'warn' } }],
-      fuse: [producer],
+      providers: [{ provide: ShadowToken, useValue: { source: 'warn' } }],
+      imports: [producer],
       shadowPolicy: 'warn',
     });
-    warnVault['resolveLazyAttachments']();
-    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
-    (warnVault as unknown as { _enforceShadowPolicy(): void })._enforceShadowPolicy();
-    (warnVault as unknown as { _enforceShadowPolicy(): void })._enforceShadowPolicy();
     expect(warnSpy).toHaveBeenCalled();
     warnSpy.mockRestore();
 
-    const errorVault = new Vault({
-      name: 'ErrorVault',
-      relics: [{ provide: ShadowToken, useValue: { source: 'error' } }],
-      fuse: [producer],
-      shadowPolicy: 'error',
-    });
-    errorVault['resolveLazyAttachments']();
-    expect(() =>
-      (errorVault as unknown as { _enforceShadowPolicy(): void })._enforceShadowPolicy()
+    expect(
+      () =>
+        new Vault({
+          name: 'ErrorVault',
+          providers: [{ provide: ShadowToken, useValue: { source: 'error' } }],
+          imports: [producer],
+          shadowPolicy: 'error',
+        })
     ).toThrow(MultipleShadowPolicyViolationsError);
 
-    const allowVault = new Vault({
-      name: 'AllowVault',
-      relics: [{ provide: ShadowToken, useValue: { source: 'allow' } }],
-      fuse: [producer],
-      shadowPolicy: 'allow',
-    });
-    allowVault['resolveLazyAttachments']();
-    expect(() =>
-      (allowVault as unknown as { _enforceShadowPolicy(): void })._enforceShadowPolicy()
+    expect(
+      () =>
+        new Vault({
+          name: 'AllowVault',
+          providers: [{ provide: ShadowToken, useValue: { source: 'allow' } }],
+          imports: [producer],
+          shadowPolicy: 'allow',
+        })
     ).not.toThrow();
   });
 });

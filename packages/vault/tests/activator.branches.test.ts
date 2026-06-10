@@ -20,8 +20,8 @@ const stubVault = () => {
   const hook = vi.fn();
   return {
     getInstantiateHook: vi.fn(),
-    _resolveRelic: resolve,
-    _resolveRelicAsync: resolveAsync,
+    _resolveProvider: resolve,
+    _resolveProviderAsync: resolveAsync,
     hook,
   };
 };
@@ -125,7 +125,7 @@ describe('Activator branches', () => {
       instance: undefined,
     });
     expect(() => activator.instantiateSync(badValueEntry, [])).toThrowError(
-      /Unconstructable relic/
+      /Unconstructable provider/
     );
 
     const missingDeps = baseEntry({
@@ -133,7 +133,7 @@ describe('Activator branches', () => {
       summons: [undefined],
     });
     expect(() => activator.instantiateSync(missingDeps, [])).toThrowError(
-      'Missing @Summon decorator'
+      'Missing @Inject decorator'
     );
 
     const zeroDeps = baseEntry({
@@ -157,7 +157,7 @@ describe('Activator branches', () => {
       factoryDeps: ['dep' as CanonicalId],
       factory: vi.fn(async (_dep, opts) => opts.signal),
     });
-    vault._resolveRelicAsync.mockResolvedValueOnce('dep-value');
+    vault._resolveProviderAsync.mockResolvedValueOnce('dep-value');
     const ac = new AbortController();
     await expect(activator.instantiateAsync(expectsSignal, [], ac.signal)).resolves.toBe(ac.signal);
 
@@ -197,7 +197,7 @@ describe('Activator branches', () => {
       instance: undefined,
     });
     await expect(activator.instantiateAsync(missingCtor, [])).rejects.toThrowError(
-      /Unconstructable relic/
+      /Unconstructable provider/
     );
 
     const zeroDeps = baseEntry({
@@ -213,7 +213,7 @@ describe('Activator branches', () => {
       summons: [undefined],
     });
     await expect(activator.instantiateAsync(missingSummon, [])).rejects.toThrowError(
-      /Missing @Summon decorator/
+      /Missing @Inject decorator/
     );
   });
 });
