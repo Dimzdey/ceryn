@@ -34,7 +34,7 @@
  */
 
 import { CircularDependencyError, ScopedWithoutScopeError } from '../errors/errors.js';
-import type { Disposable } from '../types';
+import type { Disposable } from '../types/index.js';
 import type { Activator } from './activator.js';
 import {
   FLAG_HAS_INSTANCE,

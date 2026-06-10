@@ -28,13 +28,18 @@
  *  - Scoped entries create a shallow copy to avoid mutating shared Entry metadata.
  */
 
-import { CircularDependencyError, ScopedWithoutScopeError } from '../errors/errors';
-import type { Disposable } from '../types';
-import type { Activator } from './activator';
-import { FLAG_HAS_INSTANCE, LIFECYCLE_MASK, LIFECYCLE_SCOPED, LIFECYCLE_SINGLETON } from './flags';
+import { CircularDependencyError, ScopedWithoutScopeError } from '../errors/errors.js';
+import type { Disposable } from '../types/index.js';
+import type { Activator } from './activator.js';
+import {
+  FLAG_HAS_INSTANCE,
+  LIFECYCLE_MASK,
+  LIFECYCLE_SCOPED,
+  LIFECYCLE_SINGLETON,
+} from './flags.js';
 import type { Scope } from './scope.js';
 import type { CanonicalId } from './token.js';
-import type { Vault } from './vault';
+import type { Vault } from './vault.js';
 
 export class ResolverSync {
   constructor(

@@ -1,8 +1,8 @@
 /* eslint-disable @typescript-eslint/no-unsafe-argument */
 /* eslint-disable @typescript-eslint/no-explicit-any */
-import { Vault } from '../core/vault';
-import { VaultRegistry } from '../decorators';
-import type { Constructor } from '../types/types';
+import { Vault } from '../core/vault.js';
+import { VaultRegistry } from '../decorators/index.js';
+import type { Constructor } from '../types/types.js';
 
 /**
  * The `Genesis` class provides static methods for creating and managing vault instances.

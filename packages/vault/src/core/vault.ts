@@ -11,9 +11,9 @@ import {
   MissingRelicDecoratorError,
   MultipleShadowPolicyViolationsError,
   RelicNotFoundError,
-} from '../errors';
-import { StaticRelicRegistry } from '../registry';
-import type { Disposable, ShadowPolicy } from '../types';
+} from '../errors/index.js';
+import { StaticRelicRegistry } from '../registry/index.js';
+import type { Disposable, ShadowPolicy } from '../types/index.js';
 import {
   Lifecycle,
   lifecycleToFlag,
@@ -26,7 +26,7 @@ import {
   type StaticRelicDefinition,
   type ValueProvider,
   type VaultConfig,
-} from '../types';
+} from '../types/index.js';
 import { Activator } from './activator.js';
 import type { Entry } from './entry-store.js';
 import { EntryStore } from './entry-store.js';

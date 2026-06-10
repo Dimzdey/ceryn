@@ -1,4 +1,4 @@
-import type { Entry } from './entry-store';
+import type { Entry } from './entry-store.js';
 
 /**
  * Unbounded singleton entry cache.

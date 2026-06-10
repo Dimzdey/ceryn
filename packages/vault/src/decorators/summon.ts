@@ -1,6 +1,6 @@
-import { isToken } from '../core/token';
-import { StaticRelicRegistry } from '../registry';
-import type { Constructor, InjectionToken } from '../types/types';
+import { isToken } from '../core/token.js';
+import { StaticRelicRegistry } from '../registry/index.js';
+import type { Constructor, InjectionToken } from '../types/types.js';
 
 /**
  * Parameter decorator for constructor dependency injection.

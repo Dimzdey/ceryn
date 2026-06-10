@@ -1,7 +1,12 @@
 /* eslint-disable no-duplicate-imports */
 import type { CanonicalId, Token } from '../core/token.js';
-import type { Constructor, InjectionToken, RelicMetadata, StaticRelicDefinition } from '../types';
-import { Lifecycle } from '../types';
+import type {
+  Constructor,
+  InjectionToken,
+  RelicMetadata,
+  StaticRelicDefinition,
+} from '../types/index.js';
+import { Lifecycle } from '../types/index.js';
 
 /**
  * Sentinel for relics with zero constructor dependencies.

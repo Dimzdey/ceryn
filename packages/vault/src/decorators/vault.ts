@@ -1,6 +1,6 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
-import { Scope } from '../core/scope';
-import type { Constructor, VaultConfig } from '../types/types';
+import { Scope } from '../core/scope.js';
+import type { Constructor, VaultConfig } from '../types/types.js';
 
 /**
  * Retrieve vault configuration from a decorated vault class.

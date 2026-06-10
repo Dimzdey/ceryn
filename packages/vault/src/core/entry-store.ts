@@ -21,8 +21,8 @@
  *  - Errors thrown on collisions include the existing canonical owner and the
  *    new vault name to make debugging multi-vault fusion easier.
  */
-import { TokenCollisionError } from '../errors/errors';
-import type { Constructor, RelicMetadata } from '../types/types';
+import { TokenCollisionError } from '../errors/errors.js';
+import type { Constructor, RelicMetadata } from '../types/types.js';
 import type { CanonicalId } from './token.js';
 
 /**

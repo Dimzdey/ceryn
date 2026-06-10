@@ -1,3 +1,3 @@
-export * from './relic';
-export * from './summon';
-export * from './vault';
+export * from './relic.js';
+export * from './summon.js';
+export * from './vault.js';
