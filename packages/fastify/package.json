@@ -1,0 +1,60 @@
+{
+  "name": "@ceryn/fastify",
+  "version": "0.1.0",
+  "description": "Fastify plugin for @ceryn/vault — per-request scoped dependency injection",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "import": "./dist/index.js",
+      "types": "./dist/index.d.ts"
+    }
+  },
+  "files": [
+    "dist",
+    "LICENSE",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "test": "vitest run",
+    "test:coverage": "vitest run --coverage",
+    "typecheck": "tsc --noEmit",
+    "clean": "rm -rf dist"
+  },
+  "keywords": [
+    "fastify",
+    "dependency-injection",
+    "di",
+    "ceryn",
+    "scope",
+    "request-scope"
+  ],
+  "author": "Dmytro Hudym",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Dimzdey/ceryn.git",
+    "directory": "packages/fastify"
+  },
+  "peerDependencies": {
+    "@ceryn/vault": "^2.0.0",
+    "fastify": "^4.0.0 || ^5.0.0"
+  },
+  "dependencies": {
+    "fastify-plugin": "^5.0.1"
+  },
+  "devDependencies": {
+    "@ceryn/vault": "file:../vault",
+    "fastify": "^5.3.3",
+    "typescript": "^5.3.3",
+    "vitest": "^3.2.4"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "publishConfig": {
+    "access": "public"
+  }
+}
