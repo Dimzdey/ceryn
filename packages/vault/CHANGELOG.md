@@ -1,3 +1,30 @@
+## 2.0.0 (2026-06-10)
+
+* chore: add docs/ to gitignore ([16b4e48](https://github.com/Dimzdey/ceryn/commit/16b4e48))
+* chore(vault): bump version to 2.0.0 ([4dfe178](https://github.com/Dimzdey/ceryn/commit/4dfe178))
+* feat(vault): v2.0.0 — fix all issues, rename API to standard DI terminology, consolidate benchmarks ([631fa79](https://github.com/Dimzdey/ceryn/commit/631fa79))
+* feat(vault)!: rename API to standard DI terminology (BREAKING) ([bca8198](https://github.com/Dimzdey/ceryn/commit/bca8198))
+* docs(vault): add benchmark results table to README ([0e39fc4](https://github.com/Dimzdey/ceryn/commit/0e39fc4))
+* docs(vault): fix README performance claims, add abort listener lifecycle comment ([b203d55](https://github.com/Dimzdey/ceryn/commit/b203d55))
+* refactor(vault): consolidate benchmarks into single representative comparison ([8328177](https://github.com/Dimzdey/ceryn/commit/8328177))
+* refactor(vault): rename MRUCache to SingletonCache, remove unused mruSize config ([afbc916](https://github.com/Dimzdey/ceryn/commit/afbc916))
+* test(vault): add ESM smoke test to catch packaging regressions ([45d06eb](https://github.com/Dimzdey/ceryn/commit/45d06eb))
+* fix(vault): always freeze Relic metadata, remove misleading beginScope, validate config ([7e164b3](https://github.com/Dimzdey/ceryn/commit/7e164b3))
+* fix(vault): change scope disposer order from FIFO to documented LIFO ([558ba3b](https://github.com/Dimzdey/ceryn/commit/558ba3b))
+* fix(vault): eliminate shared scratchStack re-entrancy hazard in sync resolve ([439be4e](https://github.com/Dimzdey/ceryn/commit/439be4e))
+* fix(vault): export all error classes from public API ([7f5df9d](https://github.com/Dimzdey/ceryn/commit/7f5df9d))
+* fix(vault): remove broken ./testing export and dead benchmark scripts ([0b3ef02](https://github.com/Dimzdey/ceryn/commit/0b3ef02))
+* fix(vault): remove unimplemented manifest types, delete dead AliasCollisionError, fix doc drift ([1d5075b](https://github.com/Dimzdey/ceryn/commit/1d5075b))
+* fix(vault): switch to NodeNext module resolution and fix all import extensions ([d383bae](https://github.com/Dimzdey/ceryn/commit/d383bae))
+* fix(vault): throw VaultDisposedError when resolving from disposed vault ([c64254c](https://github.com/Dimzdey/ceryn/commit/c64254c))
+* fix(vault): wire lifecycle validation at resolution time for order-independent checking ([d71a5ad](https://github.com/Dimzdey/ceryn/commit/d71a5ad))
+* fix(vault): wire shadow-policy enforcement at vault construction ([aeec30f](https://github.com/Dimzdey/ceryn/commit/aeec30f))
+
+
+### BREAKING CHANGE
+
+* All public API symbols renamed to standard DI terminology.
+
 ## 1.1.0 (2026-02-02)
 
 * feat(vault): add createTokenGroup utility for organizing tokens (#2) ([27160da](https://github.com/Dimzdey/ceryn/commit/27160da)), closes [#2](https://github.com/Dimzdey/ceryn/issues/2)
