@@ -1,11 +1,11 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 import { token } from '../src/core/token.js';
 import { Vault } from '../src/core/vault.js';
-import { StaticRelicRegistry } from '../src/registry/static-registry.js';
+import { MetadataRegistry } from '../src/registry/metadata-registry.js';
 import { CircularDependencyError } from '../src/errors/errors.js';
 
 beforeEach(() => {
-  StaticRelicRegistry.resetForTests();
+  MetadataRegistry.resetForTests();
 });
 
 describe('Re-entrant resolve', () => {
@@ -14,7 +14,7 @@ describe('Re-entrant resolve', () => {
     const OuterToken = token<{ inner: string }>('Outer');
 
     const vault = new Vault({
-      relics: [
+      providers: [
         { provide: InnerToken, useValue: 'inner-value' },
         {
           provide: OuterToken,
@@ -36,7 +36,7 @@ describe('Re-entrant resolve', () => {
     const BToken = token('B');
 
     const vault = new Vault({
-      relics: [
+      providers: [
         {
           provide: AToken,
           useFactory: () => vault.resolve(BToken),
@@ -61,7 +61,7 @@ describe('Re-entrant resolve', () => {
     const BToken = token('B');
 
     const vault = new Vault({
-      relics: [
+      providers: [
         {
           provide: AToken,
           useFactory: (_b: unknown) => 'a',

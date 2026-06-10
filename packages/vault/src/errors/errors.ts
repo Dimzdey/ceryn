@@ -31,15 +31,15 @@ export class CircularDependencyError extends Error {
 }
 
 /**
- * Relic not found error with helpful suggestions
+ * Provider not found error with helpful suggestions
  */
-export class RelicNotFoundError extends Error {
+export class ProviderNotFoundError extends Error {
   constructor(
     public token: string,
     public availableRelics: string[],
     public dependencyChain?: string[]
   ) {
-    const parts: string[] = [`Cannot resolve relic '${token}'.`, ''];
+    const parts: string[] = [`Cannot resolve provider '${token}'.`, ''];
 
     if (dependencyChain && dependencyChain.length > 0) {
       const chain = dependencyChain.join(' → ');
@@ -47,93 +47,105 @@ export class RelicNotFoundError extends Error {
     }
 
     if (availableRelics.length > 0 && availableRelics.length <= 10) {
-      parts.push('Available relics:');
+      parts.push('Available providers:');
       availableRelics.forEach((r) => parts.push(`  - ${r}`));
       parts.push('');
     } else if (availableRelics.length > 10) {
-      parts.push(`\n${availableRelics.length} relics are registered.`);
+      parts.push(`\n${availableRelics.length} providers are registered.`);
     }
 
     parts.push('To fix this:');
-    parts.push(`  1. Add @Relic() decorator to ${token}`);
-    parts.push(`  2. Include it in the 'relics' array when constructing the vault`);
-    parts.push(`  3. Check for typos in @Summon('${token}') or provider tokens`, '');
+    parts.push(`  1. Add @Injectable() decorator to ${token}`);
+    parts.push(`  2. Include it in the 'providers' array when constructing the module`);
+    parts.push(`  3. Check for typos in @Inject('${token}') or provider tokens`, '');
 
-    super(format(`Cannot resolve relic '${token}'.`, parts));
-    this.name = 'RelicNotFoundError';
+    super(format(`Cannot resolve provider '${token}'.`, parts));
+    this.name = 'ProviderNotFoundError';
   }
 }
 
-export class MissingSummonDecoratorError extends Error {
+/** @deprecated Use ProviderNotFoundError instead */
+export const RelicNotFoundError = ProviderNotFoundError;
+
+export class MissingInjectDecoratorError extends Error {
   constructor(
     public className: string,
     public parameterIndex: number
   ) {
     const dev = [
-      'Missing @Summon decorator',
+      'Missing @Inject decorator',
       '',
-      `Parameter ${parameterIndex} of ${className} is missing a @Summon decorator.`,
+      `Parameter ${parameterIndex} of ${className} is missing a @Inject decorator.`,
       '',
       'Fix:',
-      `  - Add @Summon(SomeService) to the constructor parameter at index ${parameterIndex}`,
+      `  - Add @Inject(SomeService) to the constructor parameter at index ${parameterIndex}`,
       '',
       'Example:',
-      `  @Relic()`,
+      `  @Injectable()`,
       `  class ${className} {`,
       `    constructor(`,
-      `      @Summon(SomeService) private service: SomeService`,
+      `      @Inject(SomeService) private service: SomeService`,
       `    ) {}`,
       `  }`,
     ];
-    super(format(`Missing @Summon decorator at parameter ${parameterIndex} of ${className}.`, dev));
-    this.name = 'MissingSummonDecoratorError';
+    super(format(`Missing @Inject decorator at parameter ${parameterIndex} of ${className}.`, dev));
+    this.name = 'MissingInjectDecoratorError';
   }
 }
 
-export class RelicNotExposedError extends Error {
+/** @deprecated Use MissingInjectDecoratorError instead */
+export const MissingSummonDecoratorError = MissingInjectDecoratorError;
+
+export class ProviderNotExposedError extends Error {
   constructor(
     public token: string,
     public vaultName: string,
     public revealedRelics: string[]
   ) {
     const dev = [
-      `Relic '${token}' is not revealed by vault '${vaultName}'.`,
+      `Provider '${token}' is not exported by module '${vaultName}'.`,
       '',
-      `This relic exists in '${vaultName}' but was not included in the 'reveal' list.`,
-      `Only revealed relics can be accessed from fused vaults.`,
+      `This provider exists in '${vaultName}' but was not included in the 'exports' list.`,
+      `Only exported providers can be accessed from importing modules.`,
       '',
       ...(revealedRelics.length > 0
-        ? ['Revealed relics:', ...revealedRelics.map((r) => `  - ${r}`)]
-        : [`Vault '${vaultName}' does not reveal any relics.`]),
+        ? ['Exported providers:', ...revealedRelics.map((r) => `  - ${r}`)]
+        : [`Module '${vaultName}' does not export any providers.`]),
       '',
       'To fix this:',
-      `  1. Add '${token}' to the 'reveal' array in vault '${vaultName}'`,
-      `  2. Or register '${token}' directly in the current vault`,
+      `  1. Add '${token}' to the 'exports' array in module '${vaultName}'`,
+      `  2. Or register '${token}' directly in the current module`,
     ];
-    super(format(`Relic '${token}' is not revealed by vault '${vaultName}'.`, dev));
-    this.name = 'RelicNotExposedError';
+    super(format(`Provider '${token}' is not exported by module '${vaultName}'.`, dev));
+    this.name = 'ProviderNotExposedError';
   }
 }
 
-export class CircularVaultAttachmentError extends Error {
+/** @deprecated Use ProviderNotExposedError instead */
+export const RelicNotExposedError = ProviderNotExposedError;
+
+export class CircularModuleAttachmentError extends Error {
   constructor(public cycle: string[]) {
     const cycleStr = cycle.join(' → ');
     const dev = [
-      'Circular vault fusion detected:',
+      'Circular module import detected:',
       '',
       `  ${cycleStr}`,
       '',
-      'Vaults cannot fuse to each other in a circular manner.',
+      'Modules cannot import each other in a circular manner.',
       '',
       'To fix this:',
-      `  1. Reorganize vault hierarchy to be tree-shaped (no cycles)`,
-      `  2. Extract shared relics into a separate base vault`,
-      `  3. Have both vaults fuse to the base vault instead`,
+      `  1. Reorganize module hierarchy to be tree-shaped (no cycles)`,
+      `  2. Extract shared providers into a separate base module`,
+      `  3. Have both modules import the base module instead`,
     ];
-    super(format(`Circular vault fusion detected: ${cycleStr}`, dev));
-    this.name = 'CircularVaultAttachmentError';
+    super(format(`Circular module import detected: ${cycleStr}`, dev));
+    this.name = 'CircularModuleAttachmentError';
   }
 }
+
+/** @deprecated Use CircularModuleAttachmentError instead */
+export const CircularVaultAttachmentError = CircularModuleAttachmentError;
 
 export class InvalidProviderError extends Error {
   constructor(public provider: unknown) {
@@ -148,7 +160,7 @@ export class InvalidProviderError extends Error {
       'Invalid provider configuration',
       '',
       'Valid provider shapes:',
-      `  - A class constructor decorated with @Relic()`,
+      `  - A class constructor decorated with @Injectable()`,
       `  - An object with 'provide' and 'useClass'`,
       `  - An object with 'provide' and 'useValue'`,
       `  - An object with 'provide' and 'useFactory'`,
@@ -171,47 +183,53 @@ export class TokenCollisionError extends Error {
     const dev = [
       'Token collision',
       '',
-      `Token '${token}' is already registered in vault '${existingOwner}', cannot re-register in '${newOwner}'.`,
+      `Token '${token}' is already registered in module '${existingOwner}', cannot re-register in '${newOwner}'.`,
     ];
     super(format(`Token '${token}' already registered in '${existingOwner}'.`, dev));
     this.name = 'TokenCollisionError';
   }
 }
 
-export class MissingRelicDecoratorError extends Error {
+export class MissingInjectableDecoratorError extends Error {
   constructor(public ctorName: string) {
     const dev = [
-      'Missing @Relic decorator',
+      'Missing @Injectable decorator',
       '',
-      `Class ${ctorName} is not decorated with @Relic().`,
-      `Decorate it with @Relic() or register it via an explicit provider.`,
+      `Class ${ctorName} is not decorated with @Injectable().`,
+      `Decorate it with @Injectable() or register it via an explicit provider.`,
     ];
-    super(format(`Class ${ctorName} must be decorated with @Relic().`, dev));
-    this.name = 'MissingRelicDecoratorError';
+    super(format(`Class ${ctorName} must be decorated with @Injectable().`, dev));
+    this.name = 'MissingInjectableDecoratorError';
   }
 }
 
-export class UnconstructableRelicError extends Error {
+/** @deprecated Use MissingInjectableDecoratorError instead */
+export const MissingRelicDecoratorError = MissingInjectableDecoratorError;
+
+export class UnconstructableProviderError extends Error {
   constructor(public token: string) {
     const dev = [
-      'Unconstructable relic',
+      'Unconstructable provider',
       '',
-      `Relic '${token}' has neither a constructor nor a factory.`,
+      `Provider '${token}' has neither a constructor nor a factory.`,
       `Provide 'useFactory' or 'useValue'.`,
     ];
-    super(format(`Relic '${token}' cannot be constructed.`, dev));
-    this.name = 'UnconstructableRelicError';
+    super(format(`Provider '${token}' cannot be constructed.`, dev));
+    this.name = 'UnconstructableProviderError';
   }
 }
+
+/** @deprecated Use UnconstructableProviderError instead */
+export const UnconstructableRelicError = UnconstructableProviderError;
 
 export class LazyFusionResolverMissingError extends Error {
   constructor() {
     const dev = [
-      'Lazy fusion resolver missing',
+      'Lazy import resolver missing',
       '',
-      `Lazy fusion resolver is unavailable. Import 'Genesis' before constructing vaults that fuse classes.`,
+      `Lazy import resolver is unavailable. Import 'Container' before constructing modules that import classes.`,
     ];
-    super(format('Lazy fusion resolver unavailable.', dev));
+    super(format('Lazy import resolver unavailable.', dev));
     this.name = 'LazyFusionResolverMissingError';
   }
 }
@@ -238,20 +256,23 @@ export class ScopeDisposedError extends Error {
     const dev = [
       'Scope disposed',
       '',
-      'Scope has been disposed. Do not resolve scoped relics after endScope().',
+      'Scope has been disposed. Do not resolve scoped providers after endScope().',
     ];
     super(format('Scope has been disposed.', dev));
     this.name = 'ScopeDisposedError';
   }
 }
 
-export class InvalidVaultConfigError extends Error {
+export class InvalidModuleConfigError extends Error {
   constructor(public reason: string) {
-    const dev = ['Invalid vault configuration', '', `Invalid vault configuration: ${reason}`];
-    super(format(`Invalid vault configuration: ${reason}`, dev));
-    this.name = 'InvalidVaultConfigError';
+    const dev = ['Invalid module configuration', '', `Invalid module configuration: ${reason}`];
+    super(format(`Invalid module configuration: ${reason}`, dev));
+    this.name = 'InvalidModuleConfigError';
   }
 }
+
+/** @deprecated Use InvalidModuleConfigError instead */
+export const InvalidVaultConfigError = InvalidModuleConfigError;
 
 export class ShadowPolicyViolationError extends Error {
   constructor(
@@ -262,40 +283,43 @@ export class ShadowPolicyViolationError extends Error {
   ) {
     const ownersList = Array.from(new Set(owners)).join(', ');
     const dev = [
-      `Shadowing detected for token '${canonical}' in vault '${vaultName}'`,
+      `Shadowing detected for token '${canonical}' in module '${vaultName}'`,
       `Also exposed by: ${ownersList}`,
       '',
-      `This vault registers '${canonical}' locally, and a fused aether/revealed vault also exposes it.`,
+      `This module registers '${canonical}' locally, and an imported global/exported module also exposes it.`,
       '',
       'To fix:',
-      `  1) Use aethered vault: remove '${canonical}' from this vault's 'relics'.`,
-      `  2) Keep local service intentionally: set shadowPolicy: 'allow' on this vault.`,
+      `  1) Use global module: remove '${canonical}' from this module's 'providers'.`,
+      `  2) Keep local service intentionally: set shadowPolicy: 'allow' on this module.`,
       `  3) Rename your local token (e.g., provide: 'Local${canonical}').`,
-      `  4) Or remove '${canonical}' from the producer's 'reveal' list.`,
+      `  4) Or remove '${canonical}' from the producer's 'exports' list.`,
     ];
-    super(format(`Shadowed token '${canonical}' detected in vault '${vaultName}'.`, dev));
+    super(format(`Shadowed token '${canonical}' detected in module '${vaultName}'.`, dev));
     this.name = 'ShadowPolicyViolationError';
   }
 }
 
-export class VaultDisposedError extends Error {
+export class ContainerDisposedError extends Error {
   constructor(public vaultName: string) {
     const dev = [
-      `Vault '${vaultName}' has been disposed.`,
+      `Container '${vaultName}' has been disposed.`,
       '',
-      'Dispose is irreversible. Re-create the vault before attempting new resolutions.',
+      'Dispose is irreversible. Re-create the container before attempting new resolutions.',
     ];
-    super(format(`Vault '${vaultName}' has been disposed.`, dev));
-    this.name = 'VaultDisposedError';
+    super(format(`Container '${vaultName}' has been disposed.`, dev));
+    this.name = 'ContainerDisposedError';
   }
 }
+
+/** @deprecated Use ContainerDisposedError instead */
+export const VaultDisposedError = ContainerDisposedError;
 
 export class ScopedWithoutScopeError extends Error {
   constructor(
     public token: string,
     public dependencyChain?: string[]
   ) {
-    const parts: string[] = [`Cannot resolve scoped relic '${token}' without a scope.`, ''];
+    const parts: string[] = [`Cannot resolve scoped provider '${token}' without a scope.`, ''];
 
     if (dependencyChain && dependencyChain.length > 0) {
       const chain = dependencyChain.join(' → ');
@@ -303,11 +327,11 @@ export class ScopedWithoutScopeError extends Error {
     }
 
     parts.push(
-      `Relic '${token}' is registered with Lifecycle.Scoped but no scope was provided.`,
+      `Provider '${token}' is registered with Lifecycle.Scoped but no scope was provided.`,
       '',
       'To fix this:',
       '  1. Pass a scope when resolving:',
-      '     const scope = MyVault.beginScope();',
+      '     const scope = MyModule.beginScope();',
       '     const instance = vault.resolve(Token, { scope });',
       '     await scope.dispose();',
       '',
@@ -315,7 +339,7 @@ export class ScopedWithoutScopeError extends Error {
       ''
     );
 
-    super(format(`Cannot resolve scoped relic '${token}' without a scope.`, parts));
+    super(format(`Cannot resolve scoped provider '${token}' without a scope.`, parts));
     this.name = 'ScopedWithoutScopeError';
   }
 }
@@ -360,7 +384,7 @@ export class LazyResolverInvalidReturnError extends Error {
     }
 
     const dev = [
-      'Lazy fusion resolver returned invalid value',
+      'Lazy import resolver returned invalid value',
       '',
       `Lazy resolver for class '${className}' must return a Vault instance.`,
       '',
@@ -368,7 +392,7 @@ export class LazyResolverInvalidReturnError extends Error {
       `  ${valueString}`,
       '',
       'Expected:',
-      `  A Vault instance created via Genesis.from(${className}) or new Vault()`,
+      `  A Vault instance created via Container.from(${className}) or new Vault()`,
     ];
 
     super(format(`Lazy resolver for '${className}' must return a Vault instance.`, dev));
@@ -380,7 +404,7 @@ export class LazyResolverInvalidReturnError extends Error {
  * Error thrown when multiple disposal operations fail.
  *
  * This error aggregates all disposal errors that occurred while attempting
- * to dispose a vault's instances. Each individual error is preserved in the
+ * to dispose a container's instances. Each individual error is preserved in the
  * `errors` array for detailed diagnostics.
  */
 export class AggregateDisposalError extends Error {
@@ -389,7 +413,7 @@ export class AggregateDisposalError extends Error {
     const dev = [
       'Multiple disposal errors occurred',
       '',
-      `${errors.length} error(s) occurred during vault disposal:`,
+      `${errors.length} error(s) occurred during container disposal:`,
       errorList,
       '',
       'Check the `errors` property for detailed information about each failure.',
@@ -416,20 +440,20 @@ export class MultipleShadowPolicyViolationsError extends Error {
       .join('\n');
 
     const dev = [
-      `Multiple shadow policy violations detected in vault '${vaultName}'`,
+      `Multiple shadow policy violations detected in module '${vaultName}'`,
       '',
       violationsList,
       '',
       'To fix:',
-      `  1) Use aethered vault: remove these tokens from this vault's 'relics'.`,
-      `  2) Keep local services intentionally: set shadowPolicy: 'allow' on this vault.`,
+      `  1) Use global module: remove these tokens from this module's 'providers'.`,
+      `  2) Keep local services intentionally: set shadowPolicy: 'allow' on this module.`,
       `  3) Rename your local tokens to avoid conflicts.`,
-      `  4) Or remove these tokens from the producer vaults' 'reveal' lists.`,
+      `  4) Or remove these tokens from the producer modules' 'exports' lists.`,
     ];
 
     super(
       format(
-        `${violations.length} shadow policy violation(s) detected in vault '${vaultName}'.`,
+        `${violations.length} shadow policy violation(s) detected in module '${vaultName}'.`,
         dev
       )
     );
@@ -441,11 +465,11 @@ export class MultipleShadowPolicyViolationsError extends Error {
  * Error thrown when a lifecycle dependency rule is violated.
  *
  * Lifecycle rules:
- * - Singleton relics CANNOT depend on Scoped relics (would capture first scope's instance)
- * - Singleton relics CANNOT depend on Transient relics (would capture first transient instance)
- * - Scoped relics CAN depend on Singleton relics (singletons are global)
- * - Scoped relics CANNOT depend on Transient relics (unclear semantics)
- * - Transient relics CAN depend on any lifecycle (each resolution is independent)
+ * - Singleton providers CANNOT depend on Scoped providers (would capture first scope's instance)
+ * - Singleton providers CANNOT depend on Transient providers (would capture first transient instance)
+ * - Scoped providers CAN depend on Singleton providers (singletons are global)
+ * - Scoped providers CANNOT depend on Transient providers (unclear semantics)
+ * - Transient providers CAN depend on any lifecycle (each resolution is independent)
  */
 export class LifecycleViolationError extends Error {
   constructor(
@@ -456,8 +480,8 @@ export class LifecycleViolationError extends Error {
     public dependencyChain?: string[]
   ) {
     const parts: string[] = [
-      `Lifecycle violation: ${consumerLifecycle} relic '${consumerToken}' ` +
-        `cannot depend on ${dependencyLifecycle} relic '${dependencyToken}'.`,
+      `Lifecycle violation: ${consumerLifecycle} provider '${consumerToken}' ` +
+        `cannot depend on ${dependencyLifecycle} provider '${dependencyToken}'.`,
       '',
     ];
 
@@ -470,25 +494,25 @@ export class LifecycleViolationError extends Error {
 
     if (consumerLifecycle === 'singleton' && dependencyLifecycle === 'scoped') {
       parts.push(
-        `  Singleton relics live for the entire application lifetime.`,
-        `  Scoped relics are isolated per scope (e.g., per HTTP request).`,
-        `  If a singleton depends on a scoped relic, it would capture the`,
+        `  Singleton providers live for the entire application lifetime.`,
+        `  Scoped providers are isolated per scope (e.g., per HTTP request).`,
+        `  If a singleton depends on a scoped provider, it would capture the`,
         `  first scope's instance, defeating the purpose of scoping.`,
         ''
       );
     } else if (consumerLifecycle === 'singleton' && dependencyLifecycle === 'transient') {
       parts.push(
-        `  Singleton relics live for the entire application lifetime.`,
-        `  Transient relics are created fresh for every resolution.`,
-        `  If a singleton depends on a transient relic, it would capture`,
+        `  Singleton providers live for the entire application lifetime.`,
+        `  Transient providers are created fresh for every resolution.`,
+        `  If a singleton depends on a transient provider, it would capture`,
         `  the first transient instance, defeating the purpose of transient lifecycle.`,
         ''
       );
     } else if (consumerLifecycle === 'scoped' && dependencyLifecycle === 'transient') {
       parts.push(
-        `  Scoped relics are isolated per scope.`,
-        `  Transient relics are created fresh for every resolution.`,
-        `  The semantics of a scoped relic depending on a transient are unclear.`,
+        `  Scoped providers are isolated per scope.`,
+        `  Transient providers are created fresh for every resolution.`,
+        `  The semantics of a scoped provider depending on a transient are unclear.`,
         `  Use a scoped factory pattern instead.`,
         ''
       );

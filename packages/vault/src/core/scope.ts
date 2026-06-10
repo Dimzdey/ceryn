@@ -1,6 +1,6 @@
 /* Scope
  *
- * Represents a logical request scope that isolates relic instances with
+ * Represents a logical request scope that isolates provider instances with
  * Lifecycle.Scoped from each other while sharing Lifecycle.Singleton instances.
  *
  * Purpose:
@@ -10,7 +10,7 @@
  *  - Support dynamic dependency injection at runtime via scope-local registrations
  *
  * Design:
- *  - Each scope has its own MRU cache for scoped relic instances
+ *  - Each scope has its own MRU cache for scoped provider instances
  *  - Scope-local registrations override vault registrations (highest priority)
  *  - Lazy initialization: cache and disposers only created when first used
  *  - Disposers automatically registered for instances with dispose() or close()
@@ -18,9 +18,9 @@
  *  - Scope creation is O(1) - no upfront allocation
  *
  * Lifecycle interaction:
- *  - Singleton relics: Shared globally, NOT stored in scope cache
- *  - Scoped relics: Isolated per scope, stored in scope cache
- *  - Transient relics: Fresh instance every time, never cached
+ *  - Singleton providers: Shared globally, NOT stored in scope cache
+ *  - Scoped providers: Isolated per scope, stored in scope cache
+ *  - Transient providers: Fresh instance every time, never cached
  *  - Scope-local registrations: Highest priority, override all other sources
  *
  * Resolution priority (highest to lowest):
@@ -97,8 +97,8 @@ export class Scope {
   private tokenDisposers?: Map<CanonicalId, () => void | Promise<void>>;
 
   /**
-   * MRU cache for scoped relic instances.
-   * Lazily allocated - undefined until first scoped relic is resolved.
+   * MRU cache for scoped provider instances.
+   * Lazily allocated - undefined until first scoped provider is resolved.
    */
   private _cache?: SingletonCache;
 
@@ -140,7 +140,7 @@ export class Scope {
    * Get the scope's instance cache, creating it lazily on first access.
    *
    * This getter ensures O(1) scope creation - the cache is only allocated
-   * when the first scoped relic is resolved within this scope.
+   * when the first scoped provider is resolved within this scope.
    *
    * Performance note: Validation check is only performed when accessed, not on creation.
    *
@@ -354,7 +354,7 @@ export class Scope {
    * @param token - Token to resolve
    * @returns Resolved instance
    * @throws {ScopeDisposedError} if scope has been disposed
-   * @throws {RelicNotFoundError} if token is not registered
+   * @throws {ProviderNotFoundError} if token is not registered
    *
    * @internal Used by resolver, not intended for direct use
    */
@@ -383,7 +383,7 @@ export class Scope {
    * @param token - Token to resolve
    * @returns Promise resolving to the instance
    * @throws {ScopeDisposedError} if scope has been disposed
-   * @throws {RelicNotFoundError} if token is not registered
+   * @throws {ProviderNotFoundError} if token is not registered
    *
    * @internal Used by resolver, not intended for direct use
    */

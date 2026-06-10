@@ -1,1 +1,1 @@
-export { StaticRelicRegistry } from './static-registry.js';
+export { MetadataRegistry, MetadataRegistry as StaticRelicRegistry } from './metadata-registry.js';

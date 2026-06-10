@@ -13,9 +13,9 @@ import 'reflect-metadata';
 import { Bench } from 'tinybench';
 import v8 from 'v8';
 
-import { Genesis, Relic, Summon, Vault } from '../src/index.js';
+import { Container, Injectable, Inject, Module } from '../src/index.js';
 import { token } from '../src/core/token.js';
-import { StaticRelicRegistry } from '../src/registry/index.js';
+import { MetadataRegistry } from '../src/registry/index.js';
 
 import {
   inject,
@@ -132,7 +132,7 @@ type CtrlAPI = { handle: () => string };
 // ╰──────────────────────────────────────────────────────────────────────────╯
 
 function buildCerynAdapter(): Adapter {
-  StaticRelicRegistry.reset();
+  MetadataRegistry.reset();
 
   const LoggerT = token<Logger>('Logger');
   const DatabaseT = token<Database>('Database');
@@ -157,156 +157,156 @@ function buildCerynAdapter(): Adapter {
   const AuthServiceT = token<SvcAPI>('Svc:auth');
   const AuthControllerT = token<CtrlAPI>('Ctrl:auth');
 
-  @Relic({ provide: LoggerT })
+  @Injectable({ provide: LoggerT })
   class Logger {
     log(_msg: string) {
       return 'LOG';
     }
   }
 
-  @Relic({ provide: DatabaseT })
+  @Injectable({ provide: DatabaseT })
   class Database {
-    constructor(@Summon(LoggerT) private readonly logger: Logger) {}
+    constructor(@Inject(LoggerT) private readonly logger: Logger) {}
     query(e: Endpoint) {
       this.logger.log('Query');
       return `db:${e}`;
     }
   }
 
-  @Relic({ provide: CacheT })
+  @Injectable({ provide: CacheT })
   class Cache {
     get(k: string) {
       return `cache:${k}`;
     }
   }
 
-  @Relic({ provide: UserRepoT })
+  @Injectable({ provide: UserRepoT })
   class UserRepo implements RepoAPI {
-    constructor(@Summon(DatabaseT) private readonly db: Database) {}
+    constructor(@Inject(DatabaseT) private readonly db: Database) {}
     fetch() {
       return this.db.query('users');
     }
   }
-  @Relic({ provide: UserServiceT })
+  @Injectable({ provide: UserServiceT })
   class UserService implements SvcAPI {
-    constructor(@Summon(UserRepoT) private readonly repo: RepoAPI) {}
+    constructor(@Inject(UserRepoT) private readonly repo: RepoAPI) {}
     run() {
       return this.repo.fetch();
     }
   }
-  @Relic({ provide: UserControllerT })
+  @Injectable({ provide: UserControllerT })
   class UserController implements CtrlAPI {
-    constructor(@Summon(UserServiceT) private readonly svc: SvcAPI) {}
+    constructor(@Inject(UserServiceT) private readonly svc: SvcAPI) {}
     handle() {
       return this.svc.run();
     }
   }
 
-  @Relic({ provide: OrderRepoT })
+  @Injectable({ provide: OrderRepoT })
   class OrderRepo implements RepoAPI {
-    constructor(@Summon(DatabaseT) private readonly db: Database) {}
+    constructor(@Inject(DatabaseT) private readonly db: Database) {}
     fetch() {
       return this.db.query('orders');
     }
   }
-  @Relic({ provide: OrderServiceT })
+  @Injectable({ provide: OrderServiceT })
   class OrderService implements SvcAPI {
-    constructor(@Summon(OrderRepoT) private readonly repo: RepoAPI) {}
+    constructor(@Inject(OrderRepoT) private readonly repo: RepoAPI) {}
     run() {
       return this.repo.fetch();
     }
   }
-  @Relic({ provide: OrderControllerT })
+  @Injectable({ provide: OrderControllerT })
   class OrderController implements CtrlAPI {
-    constructor(@Summon(OrderServiceT) private readonly svc: SvcAPI) {}
+    constructor(@Inject(OrderServiceT) private readonly svc: SvcAPI) {}
     handle() {
       return this.svc.run();
     }
   }
 
-  @Relic({ provide: PaymentRepoT })
+  @Injectable({ provide: PaymentRepoT })
   class PaymentRepo implements RepoAPI {
-    constructor(@Summon(DatabaseT) private readonly db: Database) {}
+    constructor(@Inject(DatabaseT) private readonly db: Database) {}
     fetch() {
       return this.db.query('payments');
     }
   }
-  @Relic({ provide: PaymentServiceT })
+  @Injectable({ provide: PaymentServiceT })
   class PaymentService implements SvcAPI {
-    constructor(@Summon(PaymentRepoT) private readonly repo: RepoAPI) {}
+    constructor(@Inject(PaymentRepoT) private readonly repo: RepoAPI) {}
     run() {
       return this.repo.fetch();
     }
   }
-  @Relic({ provide: PaymentControllerT })
+  @Injectable({ provide: PaymentControllerT })
   class PaymentController implements CtrlAPI {
-    constructor(@Summon(PaymentServiceT) private readonly svc: SvcAPI) {}
+    constructor(@Inject(PaymentServiceT) private readonly svc: SvcAPI) {}
     handle() {
       return this.svc.run();
     }
   }
 
-  @Relic({ provide: CatalogRepoT })
+  @Injectable({ provide: CatalogRepoT })
   class CatalogRepo implements RepoAPI {
-    constructor(@Summon(DatabaseT) private readonly db: Database) {}
+    constructor(@Inject(DatabaseT) private readonly db: Database) {}
     fetch() {
       return this.db.query('catalog');
     }
   }
-  @Relic({ provide: CatalogServiceT })
+  @Injectable({ provide: CatalogServiceT })
   class CatalogService implements SvcAPI {
-    constructor(@Summon(CatalogRepoT) private readonly repo: RepoAPI) {}
+    constructor(@Inject(CatalogRepoT) private readonly repo: RepoAPI) {}
     run() {
       return this.repo.fetch();
     }
   }
-  @Relic({ provide: CatalogControllerT })
+  @Injectable({ provide: CatalogControllerT })
   class CatalogController implements CtrlAPI {
-    constructor(@Summon(CatalogServiceT) private readonly svc: SvcAPI) {}
+    constructor(@Inject(CatalogServiceT) private readonly svc: SvcAPI) {}
     handle() {
       return this.svc.run();
     }
   }
 
-  @Relic({ provide: SearchRepoT })
+  @Injectable({ provide: SearchRepoT })
   class SearchRepo implements RepoAPI {
-    constructor(@Summon(DatabaseT) private readonly db: Database) {}
+    constructor(@Inject(DatabaseT) private readonly db: Database) {}
     fetch() {
       return this.db.query('search');
     }
   }
-  @Relic({ provide: SearchServiceT })
+  @Injectable({ provide: SearchServiceT })
   class SearchService implements SvcAPI {
-    constructor(@Summon(SearchRepoT) private readonly repo: RepoAPI) {}
+    constructor(@Inject(SearchRepoT) private readonly repo: RepoAPI) {}
     run() {
       return this.repo.fetch();
     }
   }
-  @Relic({ provide: SearchControllerT })
+  @Injectable({ provide: SearchControllerT })
   class SearchController implements CtrlAPI {
-    constructor(@Summon(SearchServiceT) private readonly svc: SvcAPI) {}
+    constructor(@Inject(SearchServiceT) private readonly svc: SvcAPI) {}
     handle() {
       return this.svc.run();
     }
   }
 
-  @Relic({ provide: AuthRepoT })
+  @Injectable({ provide: AuthRepoT })
   class AuthRepo implements RepoAPI {
-    constructor(@Summon(DatabaseT) private readonly db: Database) {}
+    constructor(@Inject(DatabaseT) private readonly db: Database) {}
     fetch() {
       return this.db.query('auth');
     }
   }
-  @Relic({ provide: AuthServiceT })
+  @Injectable({ provide: AuthServiceT })
   class AuthService implements SvcAPI {
-    constructor(@Summon(AuthRepoT) private readonly repo: RepoAPI) {}
+    constructor(@Inject(AuthRepoT) private readonly repo: RepoAPI) {}
     run() {
       return this.repo.fetch();
     }
   }
-  @Relic({ provide: AuthControllerT })
+  @Injectable({ provide: AuthControllerT })
   class AuthController implements CtrlAPI {
-    constructor(@Summon(AuthServiceT) private readonly svc: SvcAPI) {}
+    constructor(@Inject(AuthServiceT) private readonly svc: SvcAPI) {}
     handle() {
       return this.svc.run();
     }
@@ -345,14 +345,14 @@ function buildCerynAdapter(): Adapter {
     auth: AuthControllerT,
   };
 
-  @Vault({
-    relics: allRelics,
-    reveal: [...Object.values(CtrlT), LoggerT],
+  @Module({
+    providers: allRelics,
+    exports: [...Object.values(CtrlT), LoggerT],
     shadowPolicy: 'allow',
   })
   class AppVault {}
 
-  const buildVault = () => Genesis.from(AppVault);
+  const buildVault = () => Container.from(AppVault);
 
   let cold: ReturnType<typeof buildVault> | null = null;
   let warm: ReturnType<typeof buildVault> | null = null;

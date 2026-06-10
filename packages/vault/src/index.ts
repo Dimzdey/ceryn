@@ -1,8 +1,20 @@
-export { Genesis } from './api/genesis.js';
+export { Container, Container as Genesis } from './api/container.js';
 export { createTokenGroup } from './api/token-utils.js';
 
-export { Relic, Summon, Vault, VaultRegistry } from './decorators/index.js';
-export { StaticRelicRegistry } from './registry/static-registry.js';
+export {
+  Injectable,
+  Injectable as Relic,
+  Inject,
+  Inject as Summon,
+  Module,
+  Module as Vault,
+  ModuleRegistry,
+  ModuleRegistry as VaultRegistry,
+} from './decorators/index.js';
+export {
+  MetadataRegistry,
+  MetadataRegistry as StaticRelicRegistry,
+} from './registry/metadata-registry.js';
 
 export { Lifecycle } from './types/types.js';
 export type {
@@ -11,38 +23,49 @@ export type {
   FactoryProvider,
   InjectionToken,
   Provider,
-  RelicMetadata,
-  StaticRelicDefinition,
+  ProviderMetadata,
+  ProviderMetadata as RelicMetadata,
+  StaticProviderDefinition,
+  StaticProviderDefinition as StaticRelicDefinition,
   ValueProvider,
-  VaultConfig,
+  ModuleConfig,
+  ModuleConfig as VaultConfig,
 } from './types/types.js';
 
 export * from './core/token.js';
 
 export { Scope } from './core/scope.js';
-export { Vault as CoreVault } from './core/vault.js';
+export { Vault as CoreContainer, Vault as CoreVault } from './core/vault.js';
 
 // Errors
 export {
   AggregateDisposalError,
   CircularDependencyError,
-  CircularVaultAttachmentError,
+  CircularModuleAttachmentError,
+  CircularModuleAttachmentError as CircularVaultAttachmentError,
   FactoryExecutionError,
   InvalidProviderError,
   InvalidTokenError,
-  InvalidVaultConfigError,
+  InvalidModuleConfigError,
+  InvalidModuleConfigError as InvalidVaultConfigError,
   LazyFusionResolverMissingError,
   LazyResolverInvalidReturnError,
   LifecycleViolationError,
-  MissingRelicDecoratorError,
-  MissingSummonDecoratorError,
+  MissingInjectableDecoratorError,
+  MissingInjectableDecoratorError as MissingRelicDecoratorError,
+  MissingInjectDecoratorError,
+  MissingInjectDecoratorError as MissingSummonDecoratorError,
   MultipleShadowPolicyViolationsError,
-  RelicNotExposedError,
-  RelicNotFoundError,
+  ProviderNotExposedError,
+  ProviderNotExposedError as RelicNotExposedError,
+  ProviderNotFoundError,
+  ProviderNotFoundError as RelicNotFoundError,
   ScopeDisposedError,
   ScopedWithoutScopeError,
   ShadowPolicyViolationError,
   TokenCollisionError,
-  UnconstructableRelicError,
-  VaultDisposedError,
+  UnconstructableProviderError,
+  UnconstructableProviderError as UnconstructableRelicError,
+  ContainerDisposedError,
+  ContainerDisposedError as VaultDisposedError,
 } from './errors/errors.js';

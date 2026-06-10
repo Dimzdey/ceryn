@@ -1,112 +1,112 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { Genesis } from '../src/api/genesis.js';
+import { Container } from '../src/api/container.js';
 import { token } from '../src/core/token.js';
 import { Vault } from '../src/core/vault.js';
-import { Relic, Summon, Vault as VaultDecorator } from '../src/decorators/index.js';
+import { Injectable, Inject, Module as ModuleDecorator } from '../src/decorators/index.js';
 import type { Constructor } from '../src/index.js';
-import { StaticRelicRegistry } from '../src/registry/static-registry.js';
+import { MetadataRegistry } from '../src/registry/metadata-registry.js';
 
-describe('Genesis', () => {
+describe('Container', () => {
   beforeEach(() => {
-    StaticRelicRegistry.resetForTests();
-    Genesis.clearCache();
+    MetadataRegistry.resetForTests();
+    Container.clearCache();
     Vault.setDefaultLazyResolver(undefined);
   });
 
-  it('instantiates decorated vaults lazily and caches instances', () => {
+  it('instantiates decorated modules lazily and caches instances', () => {
     const SharedToken = token('Shared');
 
-    @Relic({ provide: SharedToken })
+    @Injectable({ provide: SharedToken })
     class SharedService {}
 
-    @VaultDecorator({
-      relics: [SharedService],
-      reveal: [SharedToken],
+    @ModuleDecorator({
+      providers: [SharedService],
+      exports: [SharedToken],
     })
-    class CoreVault {}
+    class CoreModule {}
 
-    @VaultDecorator({
-      relics: [],
-      fuse: [CoreVault],
+    @ModuleDecorator({
+      providers: [],
+      imports: [CoreModule],
     })
-    class AppVault {}
+    class AppModule {}
 
-    const vault1 = Genesis.from(AppVault);
-    const vault2 = Genesis.from(AppVault);
+    const vault1 = Container.from(AppModule);
+    const vault2 = Container.from(AppModule);
 
     expect(vault1).toBe(vault2);
     expect(vault1.resolve(SharedToken)).toBeInstanceOf(SharedService);
 
-    Genesis.clearCache();
-    const vault3 = Genesis.from(AppVault);
+    Container.clearCache();
+    const vault3 = Container.from(AppModule);
     expect(vault3).not.toBe(vault1);
   });
 
-  it('supports lazy fusion and installs default resolver', () => {
+  it('supports lazy imports and installs default resolver', () => {
     const DependencyToken = token('Dependency');
     const ConsumerToken = token('Consumer');
 
-    @Relic({ provide: DependencyToken })
+    @Injectable({ provide: DependencyToken })
     class Dependency {}
 
-    @VaultDecorator({
-      relics: [Dependency],
-      reveal: [DependencyToken],
+    @ModuleDecorator({
+      providers: [Dependency],
+      exports: [DependencyToken],
     })
-    class DependencyVault {}
+    class DependencyModule {}
 
-    @Relic({ provide: ConsumerToken })
+    @Injectable({ provide: ConsumerToken })
     class Consumer {
-      constructor(@Summon(DependencyToken) public readonly dep: Dependency) {}
+      constructor(@Inject(DependencyToken) public readonly dep: Dependency) {}
     }
 
-    @VaultDecorator({
-      relics: [Consumer],
-      fuse: [DependencyVault],
+    @ModuleDecorator({
+      providers: [Consumer],
+      imports: [DependencyModule],
     })
-    class ConsumerVault {}
+    class ConsumerModule {}
 
-    const vault = Genesis.from(ConsumerVault);
+    const vault = Container.from(ConsumerModule);
     expect(Vault.getDefaultLazyResolver()).toBeDefined();
     expect((vault.resolve(ConsumerToken) as Consumer).dep).toBeInstanceOf(Dependency);
   });
 
-  it('throws for undecorated vault classes', () => {
-    class PlainVault {}
-    expect(() => Genesis.from(PlainVault)).toThrowError('PlainVault is not a decorated vault');
+  it('throws for undecorated module classes', () => {
+    class PlainModule {}
+    expect(() => Container.from(PlainModule)).toThrowError('PlainModule is not a decorated vault');
   });
 
   it('detects circular resolution attempts', () => {
-    @VaultDecorator()
-    class LoopVault {}
+    @ModuleDecorator()
+    class LoopModule {}
 
-    const internals = Genesis as unknown as { resolving: Set<Constructor> };
-    internals.resolving.add(LoopVault);
+    const internals = Container as unknown as { resolving: Set<Constructor> };
+    internals.resolving.add(LoopModule);
     try {
-      expect(() => Genesis.from(LoopVault)).toThrowError(/Circular vault dependency detected/);
+      expect(() => Container.from(LoopModule)).toThrowError(/Circular vault dependency detected/);
     } finally {
-      internals.resolving.delete(LoopVault);
+      internals.resolving.delete(LoopModule);
     }
   });
 
   it('respects pre-resolved vault instances and custom lazy resolvers', () => {
     const CustomToken = token('Custom');
 
-    @Relic({ provide: CustomToken })
-    class CustomRelic {}
+    @Injectable({ provide: CustomToken })
+    class CustomProvider {}
 
-    const fused = new Vault({ relics: [CustomRelic], reveal: [CustomToken] });
+    const imported = new Vault({ providers: [CustomProvider], exports: [CustomToken] });
     const lazySpy = vi.fn(() => new Vault());
 
-    @VaultDecorator({
-      fuse: [fused],
+    @ModuleDecorator({
+      imports: [imported],
       lazyResolve: lazySpy,
     })
-    class InstanceFuseVault {}
+    class InstanceImportModule {}
 
-    const vault = Genesis.from(InstanceFuseVault);
-    expect(vault.fusedVaults).toContain(fused);
+    const vault = Container.from(InstanceImportModule);
+    expect(vault.importedModules).toContain(imported);
     expect(lazySpy).not.toHaveBeenCalled();
   });
 });

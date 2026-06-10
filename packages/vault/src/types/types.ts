@@ -14,17 +14,20 @@ export type Constructor<T = any> = new (...args: any[]) => T;
  */
 export type InjectionToken<T = unknown> = Token<T>;
 
-export interface RelicOptions {
+export interface InjectableOptions {
   provide: InjectionToken;
   lifecycle?: Lifecycle;
   name?: string;
 }
 
+/** @deprecated Use InjectableOptions instead */
+export type RelicOptions = InjectableOptions;
+
 /**
- * Supported lifecycles for registered relics.
+ * Supported lifecycles for registered providers.
  *
  * The lifecycle determines how instances are created and cached:
- *   - **Singleton**: One instance per vault (shared globally within vault)
+ *   - **Singleton**: One instance per container (shared globally within container)
  *   - **Scoped**: One instance per logical scope (e.g., per HTTP request)
  *   - **Transient**: New instance for every resolution
  *
@@ -42,15 +45,15 @@ export interface RelicOptions {
  *
  * @example
  * ```typescript
- * @Relic({ provide: ServiceT, lifecycle: Lifecycle.Scoped })
+ * @Injectable({ provide: ServiceT, lifecycle: Lifecycle.Scoped })
  * class RequestService { ... }
  *
- * @Relic({ provide: ConfigT, lifecycle: Lifecycle.Singleton })
+ * @Injectable({ provide: ConfigT, lifecycle: Lifecycle.Singleton })
  * class Config { ... }
  * ```
  */
 export const Lifecycle = {
-  /** Single instance per vault (default) - shared across all resolutions */
+  /** Single instance per container (default) - shared across all resolutions */
   Singleton: 'singleton',
   /** Instance scoped to a logical request scope - isolated per scope */
   Scoped: 'scoped',
@@ -103,38 +106,44 @@ export function lifecycleToFlag(lifecycle: LifecycleType): number {
 }
 
 /**
- * Metadata produced by the `@Relic()` decorator.
+ * Metadata produced by the `@Injectable()` decorator.
  *
  * All metadata objects are frozen to guarantee immutability at runtime.
  */
-export interface RelicMetadata {
-  /** Canonical identifier of the relic */
+export interface ProviderMetadata {
+  /** Canonical identifier of the provider */
   name: CanonicalId;
   /** Human-readable label used in diagnostics */
   label: string;
-  /** Lifecycle strategy used by the vault */
+  /** Lifecycle strategy used by the container */
   lifecycle: LifecycleType;
 }
 
+/** @deprecated Use ProviderMetadata instead */
+export type RelicMetadata = ProviderMetadata;
+
 /**
- * Immutable relic definition captured during decorator evaluation.
+ * Immutable provider definition captured during decorator evaluation.
  *
- * These definitions are consumed by the vault when registering decorated
+ * These definitions are consumed by the container when registering decorated
  * classes.
  */
-export interface StaticRelicDefinition {
+export interface StaticProviderDefinition {
   /** Decorated constructor */
   readonly ctor: Constructor;
   /** Frozen metadata associated with the constructor */
-  readonly metadata: RelicMetadata;
+  readonly metadata: ProviderMetadata;
   /**
    * Dependencies captured in parameter order.
    *
-   * Undefined entries represent missing `@Summon()` decorators and will trigger
+   * Undefined entries represent missing `@Inject()` decorators and will trigger
    * runtime errors if not corrected before resolution.
    */
   readonly dependencies: readonly (CanonicalId | undefined)[];
 }
+
+/** @deprecated Use StaticProviderDefinition instead */
+export type StaticRelicDefinition = StaticProviderDefinition;
 
 /**
  * Register a class constructor.
@@ -185,47 +194,50 @@ export type FactoryProvider<T = unknown> = {
 export type ShadowPolicy = 'error' | 'allow' | 'warn';
 
 /**
- * Provider union accepted by the vault.
+ * Provider union accepted by the container.
  */
 export type Provider = ClassProvider | ValueProvider | FactoryProvider;
 
 /**
- * Decorated vault class with embedded configuration.
+ * Decorated module class with embedded configuration.
  *
- * This interface represents vault classes decorated with @Vault() that
- * have configuration metadata attached via the __vaultCfg__ property.
+ * This interface represents module classes decorated with @Module() that
+ * have configuration metadata attached via the __moduleCfg__ property.
  */
-export interface DecoratedVaultClass extends Constructor<Vault> {
-  __vaultCfg__: VaultConfig;
+export interface DecoratedModuleClass extends Constructor<Vault> {
+  __moduleCfg__: ModuleConfig;
 }
 
+/** @deprecated Use DecoratedModuleClass instead */
+export type DecoratedVaultClass = DecoratedModuleClass;
+
 /**
- * Vault configuration passed to the constructor.
+ * Module configuration passed to the constructor.
  */
-export interface VaultConfig {
+export interface ModuleConfig {
   /**
-   * Relics to register in this vault.
+   * Providers to register in this module.
    *
    * Can be:
-   * - Class constructor decorated with @Relic()
+   * - Class constructor decorated with @Injectable()
    * - Provider object (useClass, useValue, useFactory)
    */
-  relics?: Array<Constructor | Provider>;
+  providers?: Array<Constructor | Provider>;
 
   /**
-   * Vaults to fuse (import revealed relics from).
+   * Modules to import (access exported providers from).
    *
-   * Only relics in the `reveal` list of fused vaults are accessible.
+   * Only providers in the `exports` list of imported modules are accessible.
    */
-  fuse?: (Constructor | Vault)[];
+  imports?: (Constructor | Vault)[];
 
   /**
-   * Relics to reveal to other vaults.
+   * Providers to export to other modules.
    *
-   * Only revealed relics can be resolved by vaults that fuse to this one.
-   * If not specified, no relics are revealed (all private).
+   * Only exported providers can be resolved by modules that import this one.
+   * If not specified, no providers are exported (all private).
    */
-  reveal?: Array<InjectionToken>;
+  exports?: Array<InjectionToken>;
 
   /**
    * Optional name for debugging and error messages.
@@ -233,20 +245,20 @@ export interface VaultConfig {
   name?: string;
 
   /**
-   * Enable transitive accessibility for all relics in this vault.
+   * Enable transitive accessibility for all providers in this module.
    *
-   * When true, all relics in this vault can be resolved by ANY descendant vault
-   * in the fusion tree, bypassing normal exposure rules. This provides
+   * When true, all providers in this module can be resolved by ANY descendant module
+   * in the import tree, bypassing normal export rules. This provides
    * transitive accessibility through the entire hierarchy.
    *
    * @default false
    */
-  aether?: boolean;
+  global?: boolean;
 
   /**
-   * Policy for handling shadowed relic registrations.
-   * - 'error' (default): throw an error when a relic registration shadows
-   *   an existing token in the same vault.
+   * Policy for handling shadowed provider registrations.
+   * - 'error' (default): throw an error when a provider registration shadows
+   *   an existing token in the same module.
    * - 'allow': permit shadowing; the local registration takes precedence.
    *
    * @default 'error'
@@ -254,7 +266,7 @@ export interface VaultConfig {
   shadowPolicy?: ShadowPolicy;
 
   /**
-   * Optional hook invoked after a relic is instantiated.
+   * Optional hook invoked after a provider is instantiated.
    *
    * Receives the canonical token string and the instantiation duration in
    * nanoseconds. Useful for profiling or custom telemetry.
@@ -262,14 +274,17 @@ export interface VaultConfig {
   onInstantiate?: (token: string, durationNs: number) => void;
 
   /**
-   * Internal lazy fusion resolver function.
+   * Internal lazy import resolver function.
    *
-   * @internal - Not part of public API. Used by Genesis framework to resolve
-   * lazy vault class references during fusion. If omitted, Vault will call the
+   * @internal - Not part of public API. Used by Container framework to resolve
+   * lazy module class references during import. If omitted, Vault will call the
    * resolver installed via Vault.setDefaultLazyResolver().
    */
   lazyResolve?: (ctor: Constructor) => Vault;
 }
+
+/** @deprecated Use ModuleConfig instead */
+export type VaultConfig = ModuleConfig;
 
 export interface Disposable {
   dispose: () => void;

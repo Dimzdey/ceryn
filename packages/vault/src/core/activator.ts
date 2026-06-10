@@ -11,7 +11,7 @@
  *  - Preserve existing sync behavior while providing a first-class async
  *    instantiation flow that supports abort signals and curried factories.
  *  - Provide clear, richly-typed errors for common programmer mistakes (missing
- *    @Summon decorator, unconstructable values, async factory in sync path).
+ *    @Inject decorator, unconstructable values, async factory in sync path).
  *
  * Notes on AbortSignal handling
  *  - Factories may accept an options argument of shape { signal } as the last
@@ -25,8 +25,8 @@
 
 import {
   FactoryExecutionError,
-  MissingSummonDecoratorError,
-  UnconstructableRelicError,
+  MissingInjectDecoratorError,
+  UnconstructableProviderError,
 } from '../errors/errors.js';
 import type { Entry } from './entry-store.js';
 import { FLAG_HAS_NO_DEPS } from './flags.js';
@@ -53,7 +53,7 @@ const nowMs = (() => {
 const toNs = (ms: number) => Math.round(ms * 1_000_000);
 
 /**
- * Relic instantiation engine.
+ * Provider instantiation engine.
  *
  * Handles the creation of instances from Entry metadata, supporting:
  * - Factory functions (sync and async)
@@ -111,8 +111,8 @@ export class Activator {
    * Behavior contract
    *  - Throws `FactoryExecutionError` when a factory is async or otherwise
    *    can't produce a sync result.
-   *  - Throws `UnconstructableRelicError` when neither ctor nor instance exist.
-   *  - Throws `MissingSummonDecoratorError` when constructor summons are missing
+   *  - Throws `UnconstructableProviderError` when neither ctor nor instance exist.
+   *  - Throws `MissingInjectDecoratorError` when constructor summons are missing
    *    decorator metadata (i.e. undefined token in summons list).
    *  - Accepts optional scope for scoped lifecycle resolution.
    */
@@ -120,7 +120,7 @@ export class Activator {
     // Factory-backed (sync only)
     if (entry.factory) {
       const deps = entry.factoryDeps ?? EMPTY_DEPS;
-      const args = deps.map((dep) => this.vault._resolveRelic(dep, stack, scope));
+      const args = deps.map((dep) => this.vault._resolveProvider(dep, stack, scope));
       try {
         return this.instrumentSync(entry.token, () => {
           const result = entry.factory!(...args);
@@ -149,7 +149,7 @@ export class Activator {
     // Value-backed: user supplied a concrete value via useValue provider
     if (!entry.ctor) {
       if (entry.instance !== undefined) return entry.instance;
-      throw new UnconstructableRelicError(entry.token);
+      throw new UnconstructableProviderError(entry.token);
     }
 
     // Zero-summons fast path: cheap constructor call when there are no dependencies
@@ -158,8 +158,8 @@ export class Activator {
 
     // Constructor with summons (sync)
     const args = entry.summons.map((dep, idx) => {
-      if (!dep) throw new MissingSummonDecoratorError(entry.ctor!.name, idx);
-      return this.vault._resolveRelic(dep, stack, scope);
+      if (!dep) throw new MissingInjectDecoratorError(entry.ctor!.name, idx);
+      return this.vault._resolveProvider(dep, stack, scope);
     });
 
     return this.instrumentSync(entry.token, () => new entry.ctor!(...args));
@@ -187,7 +187,7 @@ export class Activator {
       // on other async factories so we await them all here.
       const deps = await Promise.all(
         (entry.factoryDeps ?? EMPTY_DEPS).map((d) =>
-          this.vault._resolveRelicAsync(d, stack, signal, scope)
+          this.vault._resolveProviderAsync(d, stack, signal, scope)
         )
       );
 
@@ -212,7 +212,7 @@ export class Activator {
     // Value-backed
     if (!entry.ctor) {
       if (entry.instance !== undefined) return entry.instance;
-      throw new UnconstructableRelicError(entry.token);
+      throw new UnconstructableProviderError(entry.token);
     }
 
     // Zero-summons fast path
@@ -222,8 +222,8 @@ export class Activator {
     // Constructor with summons; summons may themselves be async factories
     const args = await Promise.all(
       entry.summons.map(async (dep, idx) => {
-        if (!dep) throw new MissingSummonDecoratorError(entry.ctor!.name, idx);
-        return this.vault._resolveRelicAsync(dep, stack, signal, scope);
+        if (!dep) throw new MissingInjectDecoratorError(entry.ctor!.name, idx);
+        return this.vault._resolveProviderAsync(dep, stack, signal, scope);
       })
     );
 

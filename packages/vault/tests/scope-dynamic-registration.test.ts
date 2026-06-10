@@ -9,11 +9,11 @@
  */
 
 import { beforeEach, describe, expect, it } from 'vitest';
-import { Genesis } from '../src/api/genesis';
+import { Container } from '../src/api/container';
 import type { Scope } from '../src/core/scope';
 import { token } from '../src/core/token';
 import type { Vault } from '../src/core/vault';
-import { Relic, Summon, Vault as VaultDecorator } from '../src/decorators';
+import { Injectable, Inject, Module as ModuleDecorator } from '../src/decorators';
 
 // Test tokens
 const ConfigT = token<Config>('Config');
@@ -27,7 +27,7 @@ class Config {
   constructor(public readonly env: string = 'test') {}
 }
 
-@Relic({ provide: ConfigT })
+@Injectable({ provide: ConfigT })
 class VaultConfig extends Config {
   constructor() {
     super('vault');
@@ -48,17 +48,17 @@ class Logger {
   }
 }
 
-@Relic({ provide: UserServiceT })
+@Injectable({ provide: UserServiceT })
 class UserService {
   constructor(
-    @Summon(DatabaseT) public readonly db: Database,
-    @Summon(LoggerT) public readonly logger: Logger
+    @Inject(DatabaseT) public readonly db: Database,
+    @Inject(LoggerT) public readonly logger: Logger
   ) {}
 }
 
-@VaultDecorator({
-  relics: [UserService, VaultConfig],
-  reveal: [UserServiceT, ConfigT],
+@ModuleDecorator({
+  providers: [UserService, VaultConfig],
+  exports: [UserServiceT, ConfigT],
 })
 class TestVault {}
 
@@ -67,7 +67,7 @@ describe('Scope Dynamic Registration - Phase 0.1', () => {
   let scope: Scope;
 
   beforeEach(() => {
-    vault = Genesis.from(TestVault);
+    vault = Container.from(TestVault);
     scope = vault.createScope();
   });
 

@@ -10,35 +10,35 @@ describe('ExposureIndex', () => {
 
     const baseVault = new Vault({
       name: 'Base',
-      relics: [{ provide: SharedToken, useValue: { from: 'base' } }],
-      reveal: [SharedToken],
+      providers: [{ provide: SharedToken, useValue: { from: 'base' } }],
+      exports: [SharedToken],
     });
 
     const duplicateVault = new Vault({
       name: 'Duplicate',
-      relics: [{ provide: SharedToken, useValue: { from: 'duplicate' } }],
-      reveal: [SharedToken],
+      providers: [{ provide: SharedToken, useValue: { from: 'duplicate' } }],
+      exports: [SharedToken],
     });
 
     const aetherVault = new Vault({
       name: 'Aether',
-      relics: [{ provide: AetherToken, useValue: { from: 'aether' } }],
-      reveal: [AetherToken],
-      aether: true,
+      providers: [{ provide: AetherToken, useValue: { from: 'aether' } }],
+      exports: [AetherToken],
+      global: true,
     });
 
     const root = new Vault({
       name: 'Root',
-      fuse: [aetherVault, duplicateVault, baseVault],
+      imports: [aetherVault, duplicateVault, baseVault],
     });
 
     const version1 = root.exposure.compute(root);
     expect(version1).toBe(1);
 
-    const revealedEntry = root.exposure.revealedMap.get(SharedToken.id);
+    const revealedEntry = root.exposure.exportedMap.get(SharedToken.id);
     expect(revealedEntry?.vault.getName()).toBe('Base');
 
-    const aetherEntry = root.exposure.aetherMap.get(AetherToken.id);
+    const aetherEntry = root.exposure.globalMap.get(AetherToken.id);
     expect(aetherEntry?.vault.getName()).toBe('Aether');
 
     // Recompute to hit early-return branch
@@ -58,14 +58,14 @@ describe('ExposureIndex', () => {
 
     const ghostVault = new Vault({
       name: 'Ghost',
-      relics: [],
-      reveal: [],
+      providers: [],
+      exports: [],
     });
 
-    ghostVault.revealedTokens.add(GhostToken.id);
+    ghostVault.exportedTokens.add(GhostToken.id);
     const root = new Vault({
       name: 'Root',
-      fuse: [ghostVault, ghostVault],
+      imports: [ghostVault, ghostVault],
     });
 
     const first = root.exposure.compute(root);
