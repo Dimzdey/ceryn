@@ -397,12 +397,12 @@ Compared against popular TypeScript DI containers on a realistic workload (6 end
 | **Warm 1k requests** | **129 ms** | 217 ms | 301 ms | 301 ms | 290 ms |
 | **Burst 10k** | **1.09 s** | 1.85 s | 2.55 s | 2.56 s | 2.52 s |
 | **Cross-module resolve 5k** | **81 ms** | 540 ms | 679 ms | 98 ms | 149 ms |
-| **Scoped lifecycle 1k** ⚡ | 1.52 s | — | **0.78 s** | — | — |
+| **Scoped lifecycle 1k** | **494 ms** | — | 1.01 s | — | — |
 | **Async factory 100** | **24 ms** | — | — | — | — |
 
 > **Cold boot is 57–560x faster** than alternatives. Warm-state resolution is 1.7–2.3x faster. Measured on Node v22, median values.
 
-> ⚡ **Scoped lifecycle note:** Ceryn scopes include `provide()` + `resolve()` + `disposeSync()` with full LIFO cleanup and auto-disposal of resources. Tsyringe child containers have no disposal semantics. Ceryn trades raw scope speed for correctness features (automatic resource cleanup, scope-local overrides, isolated disposal).
+> **Scoped lifecycle note:** Ceryn scopes include `provide()` + `resolve()` + `disposeSync()` with full LIFO cleanup and auto-disposal of resources — yet still outperform Tsyringe's child containers which have no disposal semantics.
 
 ### Why it's fast
 
