@@ -7,15 +7,11 @@
       {
         "preset": "conventionalcommits",
         "releaseRules": [
+          { "breaking": true, "scope": "vault", "release": "major" },
           { "type": "feat", "scope": "vault", "release": "minor" },
           { "type": "fix", "scope": "vault", "release": "patch" },
           { "type": "perf", "scope": "vault", "release": "patch" },
-          { "breaking": true, "scope": "vault", "release": "major" },
-          { "type": "docs", "release": false },
-          { "type": "chore", "release": false },
-          { "type": "feat", "release": false },
-          { "type": "fix", "release": false },
-          { "type": "perf", "release": false }
+          { "release": false }
         ]
       }
     ],
