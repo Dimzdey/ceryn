@@ -2,7 +2,6 @@ import { beforeEach, describe, expect, it } from 'vitest';
 
 import { StaticRelicRegistry } from '../src/registry/static-registry.js';
 import { Relic, Summon, Vault, VaultRegistry } from '../src/decorators/index.js';
-import { Scope } from '../src/core/scope.js';
 import { token } from '../src/core/token.js';
 
 describe('Decorators', () => {
@@ -44,7 +43,7 @@ describe('Decorators', () => {
     ).toThrowError();
   });
 
-  it('@Vault attaches configuration and beginScope helper', () => {
+  it('@Vault attaches configuration', () => {
     const provide = token('VaultRelic');
 
     @Relic({ provide })
@@ -57,8 +56,7 @@ describe('Decorators', () => {
     expect(cfg?.name).toBe('AppVault');
     expect(VaultRegistry.has(AppVault)).toBe(true);
 
-    const scope = (AppVault as unknown as { beginScope(): Scope }).beginScope();
-    expect(scope).toBeInstanceOf(Scope);
-    scope.disposeSync();
+    // beginScope is no longer attached to decorated classes
+    expect((AppVault as any).beginScope).toBeUndefined();
   });
 });

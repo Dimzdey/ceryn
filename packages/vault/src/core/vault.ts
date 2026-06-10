@@ -209,12 +209,23 @@ export class Vault {
    * - We don't mutate nested configuration objects after construction
    * - Deep freeze would impose unnecessary performance cost for minimal benefit
    */
-  private _validateAndFreezeConfig(rawCfg?: VaultConfig) {
-    return {
-      onInstantiate: rawCfg?.onInstantiate,
-      lazyResolve: rawCfg?.lazyResolve,
-      ...rawCfg,
-    };
+  private _validateAndFreezeConfig(rawCfg?: VaultConfig): VaultConfig {
+    const cfg: VaultConfig = { ...rawCfg };
+
+    if (cfg.onInstantiate !== undefined && typeof cfg.onInstantiate !== 'function') {
+      throw new InvalidVaultConfigError("'onInstantiate' must be a function");
+    }
+
+    if (
+      cfg.shadowPolicy !== undefined &&
+      cfg.shadowPolicy !== 'error' &&
+      cfg.shadowPolicy !== 'allow' &&
+      cfg.shadowPolicy !== 'warn'
+    ) {
+      throw new InvalidVaultConfigError("'shadowPolicy' must be 'error', 'allow', or 'warn'");
+    }
+
+    return Object.freeze(cfg);
   }
   /**
    * Fast initialization path for vault configuration.

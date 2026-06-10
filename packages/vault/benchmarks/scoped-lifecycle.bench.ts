@@ -30,7 +30,7 @@ import { container as tsyringe, type DependencyContainer } from 'tsyringe';
 import { Container as Needle } from '@needle-di/core';
 import { Container as Inversify } from 'inversify';
 import { Container as TypeDIContainer, Token as TypeDIToken } from 'typedi';
-import { Host } from '../src/vault.decorator.js';
+// Host class removed - @Vault decorator handles everything
 
 interface ScopedAdapter {
   name: string;
@@ -112,7 +112,7 @@ function buildCerynScopedAdapter(): ScopedAdapter {
     relics: [Logger, Config, Database, RequestSession, RequestService, RequestController],
     reveal: [ControllerT],
   })
-  class AppVault extends Host {}
+  class AppVault {}
 
   let genesis: Genesis | null = null;
 

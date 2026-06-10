@@ -4,12 +4,6 @@ import { Lifecycle } from '../types/index.js';
 import type { Constructor, RelicMetadata, RelicOptions } from '../types/types.js';
 
 /**
- * Environment check for production mode.
- * Skips metadata freezing in production for minimal performance gain.
- */
-const isProd = typeof process !== 'undefined' && process.env?.NODE_ENV === 'production';
-
-/**
  * Marks a class as an injectable relic.
  *
  * Registers the class with its metadata in the StaticRelicRegistry at module
@@ -67,8 +61,8 @@ export function Relic(options: RelicOptions): ClassDecorator {
       lifecycle: options.lifecycle ?? Lifecycle.Singleton,
     };
 
-    // Freeze metadata in development for immutability guarantees
-    if (!isProd) Object.freeze(metadata);
+    // Freeze metadata for immutability guarantees
+    Object.freeze(metadata);
 
     // Register with global static registry
     StaticRelicRegistry.registerRelic(constructor, metadata);
