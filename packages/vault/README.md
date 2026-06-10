@@ -405,9 +405,7 @@ Ceryn Vault is designed for performance-critical applications. Based on benchmar
 Run benchmarks yourself:
 
 ```bash
-npm run bench:di-comp
-npm run bench:genesis:perf
-npm run bench:ultimate
+npm run bench
 ```
 
 ## Architecture Patterns

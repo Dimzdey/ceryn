@@ -13,6 +13,22 @@ import 'reflect-metadata';
 import { Bench } from 'tinybench';
 import v8 from 'v8';
 
+import { Genesis, Relic, Summon, Vault } from '../src/index.js';
+import { token } from '../src/core/token.js';
+import { StaticRelicRegistry } from '../src/registry/index.js';
+
+import {
+  inject,
+  container as tsyringe,
+  injectable as tsyringeInjectable,
+  Lifecycle as TsyringeLifecycle,
+  type DependencyContainer,
+} from 'tsyringe';
+
+import { Container as Inversify, injectable as invInjectable } from 'inversify';
+import { Container as TypeDIContainer, Token as TypeDIToken } from 'typedi';
+import { Container as Needle } from '@needle-di/core';
+
 // ╭──────────────────────────────────────────────────────────────────────────╮
 // │ Percentile Calculation Utilities                                         │
 // ╰──────────────────────────────────────────────────────────────────────────╯
@@ -21,11 +37,11 @@ interface PercentileStats {
   min: number;
   max: number;
   mean: number;
-  p50: number; // median
+  p50: number;
   p90: number;
   p95: number;
   p99: number;
-  p999: number; // p99.9
+  p999: number;
   stddev: number;
   samples: number;
 }
@@ -83,53 +99,22 @@ function formatNs(ns: number): string {
 }
 
 // ╭──────────────────────────────────────────────────────────────────────────╮
-// │ Libraries under test                                                    │
-// ╰──────────────────────────────────────────────────────────────────────────╯
-import { Genesis, Relic, Summon, Vault } from '../src/index.js';
-
-import {
-  inject,
-  container as tsyringe,
-  injectable as tsyringeInjectable,
-  Lifecycle as TsyringeLifecycle,
-  type DependencyContainer,
-} from 'tsyringe';
-
-import { Container as Inversify, injectable as invInjectable } from 'inversify';
-
-import { Container as TypeDIContainer, Token as TypeDIToken } from 'typedi';
-
-// Optional: comment out if you don't want Needle in the run
-import { Container as Needle } from '@needle-di/core';
-import { token } from '../src/core/token.js';
-import { StaticRelicRegistry } from '../src/registry/index.js';
-
-// ╭──────────────────────────────────────────────────────────────────────────╮
 // │ Shared scenario definition                                              │
 // ╰──────────────────────────────────────────────────────────────────────────╯
-// A realistic mini-application with 6 endpoints. Each "request" resolves:
-// Controller -> Service -> Repository -> Infra (DB, Cache, Logger)
-// Lifecycles: Infra and Logger are singletons; Repo & Service are scoped;
-// Controller and RequestContext are transient per request.
 
 const ENDPOINTS = ['users', 'orders', 'payments', 'catalog', 'search', 'auth'] as const;
-
 type Endpoint = (typeof ENDPOINTS)[number];
-// ╭──────────────────────────────────────────────────────────────────────────╮
-// │ Adapters: each DI lib implements the same scenario                       │
-// ╰──────────────────────────────────────────────────────────────────────────╯
 
 interface Adapter {
   name: string;
-  coldBoot(): Promise<void> | void; // registration of all components
-  firstRequest(): Promise<void> | void; // a single request after cold boot
-  warmup(iter: number): Promise<void> | void; // build JIT/IC, fill caches
-  requestCycle(reqs: number): Promise<void> | void; // simulate N requests (random endpoints)
-  bridgeCycle(reqs: number): Promise<void> | void; // resolve across a bridge/aether-like hop
-  heap(): number; // heapUsed snapshot
+  coldBoot(): Promise<void> | void;
+  firstRequest(): Promise<void> | void;
+  warmup(iter: number): Promise<void> | void;
+  requestCycle(reqs: number): Promise<void> | void;
+  bridgeCycle(reqs: number): Promise<void> | void;
+  heap(): number;
 }
 
-// Utility to compute random endpoint sequence that is stable across libs
 function* endpointStream(seed = 1337): Generator<Endpoint> {
   let s = seed >>> 0;
   const rnd = () => (s = (s * 1664525 + 1013904223) >>> 0) / 2 ** 32;
@@ -143,30 +128,19 @@ type SvcAPI = { run: () => string };
 type CtrlAPI = { handle: () => string };
 
 // ╭──────────────────────────────────────────────────────────────────────────╮
-// │ Ceryn adapter                                                            │
+// │ Ceryn adapter                                                           │
 // ╰──────────────────────────────────────────────────────────────────────────╯
 
-// ╭──────────────────────────────────────────────────────────────────────────╮
-// │ Ceryn adapter (FIXED - Manual Unrolled Classes)                          │
-// ╰──────────────────────────────────────────────────────────────────────────╯
-
-// ╭──────────────────────────────────────────────────────────────────────────╮
-// │ Ceryn adapter (FIXED - Flattened Dependencies)                           │
-// ╰──────────────────────────────────────────────────────────────────────────╯
-
-function buildCerynGenesisAdapter(): Adapter {
+function buildCerynAdapter(): Adapter {
   StaticRelicRegistry.reset();
 
-  // --- 1. Define 3 Infra Tokens ---
   const LoggerT = token<Logger>('Logger');
   const DatabaseT = token<Database>('Database');
   const CacheT = token<Cache>('Cache');
 
-  // --- 2. Define 18 Endpoint Tokens ---
   const UserRepoT = token<RepoAPI>('Repo:users');
   const UserServiceT = token<SvcAPI>('Svc:users');
   const UserControllerT = token<CtrlAPI>('Ctrl:users');
-  // ... (all other 15 tokens)
   const OrderRepoT = token<RepoAPI>('Repo:orders');
   const OrderServiceT = token<SvcAPI>('Svc:orders');
   const OrderControllerT = token<CtrlAPI>('Ctrl:orders');
@@ -183,7 +157,6 @@ function buildCerynGenesisAdapter(): Adapter {
   const AuthServiceT = token<SvcAPI>('Svc:auth');
   const AuthControllerT = token<CtrlAPI>('Ctrl:auth');
 
-  // --- 3. Define Infra Relic Classes (all singletons by default) ---
   @Relic({ provide: LoggerT })
   class Logger {
     log(_msg: string) {
@@ -191,14 +164,11 @@ function buildCerynGenesisAdapter(): Adapter {
     }
   }
 
-  // *** THIS IS THE FIX ***
-  // Removed the @Summon(LoggerT) dependency from Database
-  // to avoid the framework's bug with nested dependencies.
   @Relic({ provide: DatabaseT })
   class Database {
-    constructor() {} // <-- No dependencies
+    constructor(@Summon(LoggerT) private readonly logger: Logger) {}
     query(e: Endpoint) {
-      // this.logger.log('Query'); // <-- Cannot log here anymore
+      this.logger.log('Query');
       return `db:${e}`;
     }
   }
@@ -210,10 +180,6 @@ function buildCerynGenesisAdapter(): Adapter {
     }
   }
 
-  // --- 4. Manually define all 18 Endpoint Classes ---
-  // (These are unchanged, but their dependency (DatabaseT) is now simpler)
-
-  // -- Users --
   @Relic({ provide: UserRepoT })
   class UserRepo implements RepoAPI {
     constructor(@Summon(DatabaseT) private readonly db: Database) {}
@@ -236,7 +202,6 @@ function buildCerynGenesisAdapter(): Adapter {
     }
   }
 
-  // -- Orders --
   @Relic({ provide: OrderRepoT })
   class OrderRepo implements RepoAPI {
     constructor(@Summon(DatabaseT) private readonly db: Database) {}
@@ -259,7 +224,6 @@ function buildCerynGenesisAdapter(): Adapter {
     }
   }
 
-  // -- Payments --
   @Relic({ provide: PaymentRepoT })
   class PaymentRepo implements RepoAPI {
     constructor(@Summon(DatabaseT) private readonly db: Database) {}
@@ -282,7 +246,6 @@ function buildCerynGenesisAdapter(): Adapter {
     }
   }
 
-  // -- Catalog --
   @Relic({ provide: CatalogRepoT })
   class CatalogRepo implements RepoAPI {
     constructor(@Summon(DatabaseT) private readonly db: Database) {}
@@ -305,7 +268,6 @@ function buildCerynGenesisAdapter(): Adapter {
     }
   }
 
-  // -- Search --
   @Relic({ provide: SearchRepoT })
   class SearchRepo implements RepoAPI {
     constructor(@Summon(DatabaseT) private readonly db: Database) {}
@@ -328,7 +290,6 @@ function buildCerynGenesisAdapter(): Adapter {
     }
   }
 
-  // -- Auth --
   @Relic({ provide: AuthRepoT })
   class AuthRepo implements RepoAPI {
     constructor(@Summon(DatabaseT) private readonly db: Database) {}
@@ -351,7 +312,6 @@ function buildCerynGenesisAdapter(): Adapter {
     }
   }
 
-  // --- 5. Build the list of all 21 relics ---
   const allRelics = [
     Logger,
     Database,
@@ -376,7 +336,6 @@ function buildCerynGenesisAdapter(): Adapter {
     AuthController,
   ];
 
-  // Map of endpoint names to their controller tokens
   const CtrlT: Record<Endpoint, ReturnType<typeof token>> = {
     users: UserControllerT,
     orders: OrderControllerT,
@@ -386,13 +345,10 @@ function buildCerynGenesisAdapter(): Adapter {
     auth: AuthControllerT,
   };
 
-  // --- 6. Define a SINGLE root vault ---
   @Vault({
     relics: allRelics,
-    reveal: [
-      ...Object.values(CtrlT), // Reveal all controller tokens
-      LoggerT, // Reveal LoggerT for the bridge test
-    ],
+    reveal: [...Object.values(CtrlT), LoggerT],
+    shadowPolicy: 'allow',
   })
   class AppVault {}
 
@@ -417,16 +373,14 @@ function buildCerynGenesisAdapter(): Adapter {
       warm = warm ?? buildVault();
       for (let k = 0; k < n; k++) {
         const e = epGen.next().value as Endpoint;
-        const svc = warm.resolve(CtrlT[e]) as CtrlAPI;
-        svc.handle();
+        (warm.resolve(CtrlT[e]) as CtrlAPI).handle();
       }
     },
     requestCycle(n: number) {
       const g = warm ?? (warm = buildVault());
       for (let k = 0; k < n; k++) {
         const e = epGen.next().value as Endpoint;
-        const svc = g.resolve(CtrlT[e]) as CtrlAPI;
-        svc.handle();
+        (g.resolve(CtrlT[e]) as CtrlAPI).handle();
       }
     },
     bridgeCycle(n: number) {
@@ -440,12 +394,12 @@ function buildCerynGenesisAdapter(): Adapter {
     },
   };
 }
+
 // ╭──────────────────────────────────────────────────────────────────────────╮
-// │ Tsyringe adapter                                                         │
+// │ Tsyringe adapter                                                        │
 // ╰──────────────────────────────────────────────────────────────────────────╯
 
 function buildTsyringeAdapter(): Adapter {
-  // Tokens (no change)
   const TOK = {
     DB: Symbol('DB'),
     Cache: Symbol('Cache'),
@@ -455,7 +409,6 @@ function buildTsyringeAdapter(): Adapter {
   const Svc = Object.fromEntries(ENDPOINTS.map((e) => [e, Symbol(`Svc:${e}`)])) as any;
   const Ctrl = Object.fromEntries(ENDPOINTS.map((e) => [e, Symbol(`Ctrl:${e}`)])) as any;
 
-  // Base classes (no change)
   @tsyringeInjectable()
   class DB {
     query(e: Endpoint) {
@@ -475,11 +428,9 @@ function buildTsyringeAdapter(): Adapter {
     }
   }
 
-  // --- CHANGED: Added @inject decorators ---
   const buildEndpointClasses = (endpoint: Endpoint) => {
     @tsyringeInjectable()
     class EndpointRepo {
-      // Use @inject(TOKEN)
       constructor(@inject(TOK.DB) private db: DB) {}
       fetch() {
         return this.db.query(endpoint);
@@ -488,7 +439,6 @@ function buildTsyringeAdapter(): Adapter {
 
     @tsyringeInjectable()
     class EndpointSvc {
-      // Use @inject(TOKEN)
       constructor(@inject(Repo[endpoint]) private repo: EndpointRepo) {}
       run() {
         return this.repo.fetch();
@@ -497,7 +447,6 @@ function buildTsyringeAdapter(): Adapter {
 
     @tsyringeInjectable()
     class EndpointCtrl {
-      // Use @inject(TOKEN)
       constructor(@inject(Svc[endpoint]) private svc: EndpointSvc) {}
       handle() {
         return this.svc.run();
@@ -509,8 +458,6 @@ function buildTsyringeAdapter(): Adapter {
 
   const buildRoot = (): DependencyContainer => {
     const container = tsyringe.createChildContainer();
-
-    // Register global singletons
     container.register(TOK.DB, { useClass: DB }, { lifecycle: TsyringeLifecycle.Singleton });
     container.register(TOK.Cache, { useClass: Cache }, { lifecycle: TsyringeLifecycle.Singleton });
     container.register(
@@ -519,10 +466,8 @@ function buildTsyringeAdapter(): Adapter {
       { lifecycle: TsyringeLifecycle.Singleton }
     );
 
-    // Register all endpoint classes as singletons
     for (const e of ENDPOINTS) {
       const { EndpointRepo, EndpointSvc, EndpointCtrl } = buildEndpointClasses(e);
-
       container.register(
         Repo[e],
         { useClass: EndpointRepo },
@@ -542,14 +487,11 @@ function buildTsyringeAdapter(): Adapter {
     return container;
   };
 
-  // --- REMOVED makeScope function ---
   const epGen = endpointStream();
   let coldRoot: ReturnType<typeof buildRoot> | null = null;
   let sharedRoot: ReturnType<typeof buildRoot> | null = null;
-
   const ensureSharedRoot = () => sharedRoot ?? (sharedRoot = buildRoot());
 
-  // --- The rest of the adapter is unchanged ---
   return {
     name: 'Tsyringe',
     coldBoot() {
@@ -588,11 +530,10 @@ function buildTsyringeAdapter(): Adapter {
 }
 
 // ╭──────────────────────────────────────────────────────────────────────────╮
-// │ Inversify adapter                                                        │
+// │ Inversify adapter                                                       │
 // ╰──────────────────────────────────────────────────────────────────────────╯
 
 function buildInversifyAdapter(): Adapter {
-  // --- Tokens (no change) ---
   const TOK = {
     DB: Symbol.for('DB'),
     Cache: Symbol.for('Cache'),
@@ -611,7 +552,6 @@ function buildInversifyAdapter(): Adapter {
     symbol
   >;
 
-  // --- Base classes (no change) ---
   @invInjectable()
   class DB {
     query(e: Endpoint) {
@@ -631,33 +571,25 @@ function buildInversifyAdapter(): Adapter {
     }
   }
 
-  // --- NO dynamic class builder ---
-
   const buildRoot = () => {
     const container = new Inversify({ defaultScope: 'Transient' });
-    // Bind base singletons
     container.bind(TOK.DB).to(DB).inSingletonScope();
     container.bind(TOK.Cache).to(Cache).inSingletonScope();
     container.bind(TOK.Logger).to(Logger).inSingletonScope();
 
-    // --- CHANGED: Reverted to factory-based singletons ---
     for (const e of ENDPOINTS) {
-      // This tells Inversify: "Here is a factory for Repo[e].
-      // Call it ONCE and save the result."
       container
         .bind(Repo[e])
         .toResolvedValue((db: DB): RepoAPI => ({ fetch: () => db.query(e) }), [TOK.DB])
-        .inSingletonScope(); // <-- This makes it a singleton
-
+        .inSingletonScope();
       container
         .bind(Svc[e])
         .toResolvedValue((repo: RepoAPI): SvcAPI => ({ run: () => repo.fetch() }), [Repo[e]])
-        .inSingletonScope(); // <-- This makes it a singleton
-
+        .inSingletonScope();
       container
         .bind(Ctrl[e])
         .toResolvedValue((svc: SvcAPI): CtrlAPI => ({ handle: () => svc.run() }), [Svc[e]])
-        .inSingletonScope(); // <-- This makes it a singleton
+        .inSingletonScope();
     }
     return container;
   };
@@ -667,8 +599,6 @@ function buildInversifyAdapter(): Adapter {
   let sharedRoot: Inversify | null = null;
   const ensureSharedRoot = () => sharedRoot ?? (sharedRoot = buildRoot());
 
-  // --- The rest of the adapter logic is unchanged ---
-  // (It correctly resolves singletons from the root container)
   return {
     name: 'Inversify',
     coldBoot() {
@@ -707,11 +637,10 @@ function buildInversifyAdapter(): Adapter {
 }
 
 // ╭──────────────────────────────────────────────────────────────────────────╮
-// │ TypeDI adapter                                                           │
+// │ TypeDI adapter                                                          │
 // ╰──────────────────────────────────────────────────────────────────────────╯
 
 function buildTypeDIAdapter(): Adapter {
-  // --- Tokens (no change) ---
   const TOK = {
     DB: new TypeDIToken<any>('DB'),
     Cache: new TypeDIToken<any>('Cache'),
@@ -727,7 +656,6 @@ function buildTypeDIAdapter(): Adapter {
     ENDPOINTS.map((e) => [e, new TypeDIToken<any>(`Ctrl:${e}`)])
   ) as any;
 
-  // --- Base classes (no change) ---
   class DB {
     query(e: Endpoint) {
       return `db:${e}`;
@@ -744,7 +672,6 @@ function buildTypeDIAdapter(): Adapter {
     }
   }
 
-  // --- CHANGED: Register all services as global singletons ---
   const configureRoot = () => {
     TypeDIContainer.reset();
 
@@ -754,7 +681,6 @@ function buildTypeDIAdapter(): Adapter {
       { id: TOK.Logger, value: new Logger(), global: true },
     ];
 
-    // Add all Repo, Svc, and Ctrl services as global singletons
     for (const e of ENDPOINTS) {
       services.push({
         id: Repo[e],
@@ -776,8 +702,6 @@ function buildTypeDIAdapter(): Adapter {
     TypeDIContainer.set(services);
   };
 
-  // --- REMOVED makeScope function and scopeSeq ---
-
   const epGen = endpointStream();
   let coldReady = false;
   let sharedReady = false;
@@ -789,8 +713,6 @@ function buildTypeDIAdapter(): Adapter {
       coldReady = true;
       sharedReady = false;
     },
-
-    // --- CHANGED: Resolve global singleton ---
     firstRequest() {
       if (!coldReady) {
         configureRoot();
@@ -798,11 +720,8 @@ function buildTypeDIAdapter(): Adapter {
         sharedReady = false;
       }
       const e = epGen.next().value;
-      // No scope, get from global container
       (TypeDIContainer.get(Ctrl[e]) as any).handle();
     },
-
-    // --- CHANGED: Resolve global singletons N times ---
     warmup(n) {
       if (!sharedReady) {
         configureRoot();
@@ -814,8 +733,6 @@ function buildTypeDIAdapter(): Adapter {
         (TypeDIContainer.get(Ctrl[e]) as any).handle();
       }
     },
-
-    // --- CHANGED: Resolve global singletons N times ---
     requestCycle(n) {
       if (!sharedReady) {
         configureRoot();
@@ -827,8 +744,6 @@ function buildTypeDIAdapter(): Adapter {
         (TypeDIContainer.get(Ctrl[e]) as any).handle();
       }
     },
-
-    // --- UNCHANGED: This was already correct ---
     bridgeCycle(n) {
       if (!sharedReady) {
         configureRoot();
@@ -845,9 +760,11 @@ function buildTypeDIAdapter(): Adapter {
   };
 }
 
-// Optional: Needle adapter (simple bindings)
+// ╭──────────────────────────────────────────────────────────────────────────╮
+// │ Needle adapter                                                          │
+// ╰──────────────────────────────────────────────────────────────────────────╯
+
 function buildNeedleAdapter(): Adapter {
-  // --- Tokens (no change) ---
   const TOK = { DB: 'DB', Cache: 'Cache', Logger: 'Logger' } as const;
   const Repo: Record<Endpoint, string> = Object.fromEntries(
     ENDPOINTS.map((e) => [e, `Repo:${e}`])
@@ -859,36 +776,21 @@ function buildNeedleAdapter(): Adapter {
 
   const buildRoot = () => {
     const container = new Needle();
-    // Bind base singletons
     container.bindAll(
       { provide: TOK.DB, useFactory: () => ({ query: (e: Endpoint) => `db:${e}` }) },
       { provide: TOK.Cache, useFactory: () => ({ get: (k: string) => `cache:${k}` }) },
       { provide: TOK.Logger, useFactory: () => ({ log: (s: string) => s }) }
     );
 
-    // --- CHANGED: Register all services as singletons in the root ---
-    // (Needle defaults to singleton lifecycle)
     for (const e of ENDPOINTS) {
       container.bindAll(
-        {
-          provide: Repo[e],
-          // We must use 'c.get' here to get from the container
-          useFactory: (c) => ({ fetch: () => (c.get(TOK.DB) as any).query(e) }),
-        },
-        {
-          provide: Svc[e],
-          useFactory: (c) => ({ run: () => (c.get(Repo[e]) as any).fetch() }),
-        },
-        {
-          provide: Ctrl[e],
-          useFactory: (c) => ({ handle: () => (c.get(Svc[e]) as any).run() }),
-        }
+        { provide: Repo[e], useFactory: (c) => ({ fetch: () => (c.get(TOK.DB) as any).query(e) }) },
+        { provide: Svc[e], useFactory: (c) => ({ run: () => (c.get(Repo[e]) as any).fetch() }) },
+        { provide: Ctrl[e], useFactory: (c) => ({ handle: () => (c.get(Svc[e]) as any).run() }) }
       );
     }
     return container;
   };
-
-  // --- REMOVED makeScope function ---
 
   const epGen = endpointStream();
   let coldRoot: ReturnType<typeof buildRoot> | null = null;
@@ -901,15 +803,11 @@ function buildNeedleAdapter(): Adapter {
       coldRoot = buildRoot();
       sharedRoot = null;
     },
-
-    // --- CHANGED: Resolve singleton from root ---
     firstRequest() {
       const root = coldRoot ?? (coldRoot = buildRoot());
       const e = epGen.next().value as Endpoint;
       (root.get(Ctrl[e]) as any).handle();
     },
-
-    // --- CHANGED: Resolve singletons from root N times ---
     warmup(n) {
       const root = ensureSharedRoot();
       for (let i = 0; i < n; i++) {
@@ -917,8 +815,6 @@ function buildNeedleAdapter(): Adapter {
         (root.get(Ctrl[e]) as any).handle();
       }
     },
-
-    // --- CHANGED: Resolve singletons from root N times ---
     requestCycle(n) {
       const root = ensureSharedRoot();
       for (let i = 0; i < n; i++) {
@@ -926,8 +822,6 @@ function buildNeedleAdapter(): Adapter {
         (root.get(Ctrl[e]) as any).handle();
       }
     },
-
-    // --- UNCHANGED: This was already correct ---
     bridgeCycle(n) {
       const root = ensureSharedRoot();
       for (let i = 0; i < n; i++) {
@@ -941,7 +835,7 @@ function buildNeedleAdapter(): Adapter {
 }
 
 // ╭──────────────────────────────────────────────────────────────────────────╮
-// │ Harness                                                                   │
+// │ Harness                                                                 │
 // ╰──────────────────────────────────────────────────────────────────────────╯
 
 function ms(v: number) {
@@ -954,7 +848,7 @@ async function main() {
   console.log(`Heap limit ~${Math.round(v8.getHeapStatistics().heap_size_limit / 1024 / 1024)} MB`);
 
   const adapters: Adapter[] = [
-    buildCerynGenesisAdapter(),
+    buildCerynAdapter(),
     buildTsyringeAdapter(),
     buildInversifyAdapter(),
     buildTypeDIAdapter(),
@@ -963,7 +857,6 @@ async function main() {
 
   const bench = new Bench({ time: 1200 });
 
-  // Cold boot
   for (const a of adapters) {
     bench.add(`${a.name}: Cold boot`, () => {
       a.coldBoot();
@@ -971,7 +864,6 @@ async function main() {
     });
   }
 
-  // Warm steady-state (1k requests)
   for (const a of adapters) {
     bench.add(`${a.name}: Warm 1k requests`, () => {
       a.warmup(200);
@@ -979,14 +871,12 @@ async function main() {
     });
   }
 
-  // Burst (10k resolves across random endpoints)
   for (const a of adapters) {
     bench.add(`${a.name}: Burst 10k`, () => {
       a.requestCycle(10_000);
     });
   }
 
-  // Bridge/Aether hop (5k)
   for (const a of adapters) {
     bench.add(`${a.name}: Bridge 5k`, () => {
       a.bridgeCycle(5_000);
@@ -998,9 +888,6 @@ async function main() {
 
   console.table(bench.table());
 
-  // After: console.table(bench.table());
-
-  // Add this:
   console.log('\n=== Percentile Analysis ===\n');
 
   for (const phase of ['Cold boot', 'Warm 1k requests', 'Burst 10k', 'Bridge 5k'] as const) {
@@ -1015,7 +902,6 @@ async function main() {
         continue;
       }
 
-      // Convert samples from seconds to nanoseconds
       const samplesNs = task.result.samples.map((s: number) => s * 1_000_000_000);
       const stats = calculatePercentiles(samplesNs);
 
@@ -1035,11 +921,10 @@ async function main() {
     console.log();
   }
 
-  // Summary with heap deltas
   console.log('\n=== Summary (lower is better) ===');
   const getPeriodMs = (name: string) => {
     const t: any = (bench as any).tasks?.find((x: any) => x.name === name);
-    const s = t?.result?.period ?? t?.result?.mean ?? 0; // seconds
+    const s = t?.result?.period ?? t?.result?.mean ?? 0;
     return s * 1000;
   };
 
@@ -1060,10 +945,8 @@ async function main() {
           continue;
         }
         if (a <= b) {
-          // Ceryn faster
           console.log(`  Ceryn vs ${r.name}: ${(b / a).toFixed(2)}x faster`);
         } else {
-          // Ceryn slower
           console.log(`  Ceryn vs ${r.name}: ${(a / b).toFixed(2)}x slower`);
         }
       }

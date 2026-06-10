@@ -24,13 +24,7 @@
     "test:ui": "vitest --ui",
     "typecheck": "tsc --noEmit",
     "clean": "rm -rf dist",
-    "bench:ultimate": "tsx --tsconfig tsconfig.bench.json --expose-gc benchmarks/ultimate.bench.ts",
-    "bench:genesis:perf": "tsx --tsconfig tsconfig.bench.json --expose-gc benchmarks/genesis-perf.bench.ts",
-    "bench:imperative:perf": "tsx --tsconfig tsconfig.bench.json --expose-gc benchmarks/imperative-perf.bench.ts",
-    "bench:e:p": "tsx --tsconfig tsconfig.bench.json --expose-gc benchmarks/enormous.bench.ts",
-    "b:e:d": "tsx --tsconfig tsconfig.bench.json --expose-gc benchmarks/di-comp.bench.ts",
-    "build:bench": "npx --yes esbuild benchmarks/**/*.ts --bundle --platform=node --target=node22 --format=cjs --outdir=dist/benchmarks --log-level=error",
-    "bench:d:c": "node --expose-gc dist/benchmarks/di-comp.bench.js"
+    "bench": "tsx --tsconfig tsconfig.bench.json --expose-gc benchmarks/benchmark.ts"
   },
   "keywords": [
     "dependency-injection",
