@@ -7,15 +7,15 @@
     "packages/*"
   ],
   "scripts": {
-    "build": "npm run build --workspaces",
+    "build": "npm run build -w packages/vault && npm run build -w packages/fastify",
     "test": "npm run test --workspaces",
-    "test:cov": "npm run test:coverage --workspaces",
+    "test:cov": "npm run test:coverage --workspaces --if-present",
     "clean": "npm run clean --workspaces",
     "lint": "eslint 'packages/*/src/**/*.ts' 'packages/*/tests/**/*.ts'",
     "lint:fix": "eslint 'packages/*/src/**/*.ts' 'packages/*/tests/**/*.ts' --fix",
     "format": "prettier --write 'packages/*/src/**/*.ts' 'packages/*/tests/**/*.ts'",
     "format:check": "prettier --check 'packages/*/src/**/*.ts' 'packages/*/tests/**/*.ts'",
-    "typecheck": "npm run typecheck --workspaces --if-present",
+    "typecheck": "npm run build -w packages/vault && npm run typecheck -w packages/vault && npm run typecheck -w packages/fastify",
     "check": "npm run typecheck && npm run lint && npm run format:check",
     "prepublishOnly": "npm run check && npm run test && npm run build",
     "prepare": "husky"
