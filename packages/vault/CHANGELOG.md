@@ -1,3 +1,8 @@
+## <small>2.1.2 (2026-06-10)</small>
+
+* fix(vault): update benchmark table with optimized scoped results ([a053fd2](https://github.com/Dimzdey/ceryn/commit/a053fd2))
+* perf(vault): optimize scoped lifecycle hot path ([580e2ac](https://github.com/Dimzdey/ceryn/commit/580e2ac))
+
 ## <small>2.1.1 (2026-06-10)</small>
 
 * fix(vault): update package metadata for npm registry ([591fb58](https://github.com/Dimzdey/ceryn/commit/591fb58))
