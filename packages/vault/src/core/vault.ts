@@ -113,9 +113,8 @@ export class Vault {
   private lazyAttachmentClasses: Constructor[] = [];
   private lazyAttachmentsResolved = false; // flip only after successful compute()
 
-  // OPTIMIZATION: Pre-allocated stack buffer for faster dependency tracking
-  // Uses counter-based indexing instead of push/pop for better performance
-  private readonly scratchStack: CanonicalId[] = [];
+  // NOTE: scratchStack was removed — each resolve() call now allocates a fresh
+  // stack to avoid re-entrancy corruption when factories call vault.resolve().
 
   // Registration sealed guard
   private entriesSealed = false;
@@ -489,8 +488,7 @@ export class Vault {
     // Local resolution
     const local = this.store.getByCanonical(id);
     if (local !== undefined) {
-      const stack = this.scratchStack;
-      stack.length = 0;
+      const stack: CanonicalId[] = [];
       const out = this.resolverSync.fromEntry<T>(id, stack, scope);
 
       // OPTIMIZATION: Only prime cache if singleton AND not already cached
@@ -502,8 +500,7 @@ export class Vault {
 
     // Cross-vault (cold path)
     this.resolveLazyAttachments();
-    const stack = this.scratchStack;
-    stack.length = 0;
+    const stack: CanonicalId[] = [];
     const x = this._crossVaultSync<T>(id, stack, scope);
     if (x !== undefined) return x;
 
