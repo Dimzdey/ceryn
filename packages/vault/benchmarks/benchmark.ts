@@ -1000,7 +1000,8 @@ async function main() {
   console.log('\n=== Summary (lower is better) ===');
   const getPeriodMs = (name: string) => {
     const t: any = (bench as any).tasks?.find((x: any) => x.name === name);
-    const s = t?.result?.period ?? t?.result?.mean ?? 0;
+    if (!t?.result) return -1; // task didn't run
+    const s = t.result.period ?? t.result.mean ?? 0;
     return s * 1000;
   };
 
@@ -1013,7 +1014,15 @@ async function main() {
     'Async Factory 100',
   ] as const) {
     console.log(`\n-- ${phase}`);
-    const rows = adapters.map((a) => ({ name: a.name, ms: getPeriodMs(`${a.name}: ${phase}`) }));
+    const rows = adapters
+      .map((a) => ({ name: a.name, ms: getPeriodMs(`${a.name}: ${phase}`) }))
+      .filter((r) => r.ms > 0); // Exclude adapters that didn't participate
+
+    if (rows.length === 0) {
+      console.log('  (no participants)');
+      continue;
+    }
+
     rows.forEach((r) => console.log(`${r.name.padEnd(12)} ${ms(r.ms)}`));
     const best = rows.reduce((p, c) => (p.ms <= c.ms ? p : c));
     console.log(`Fastest: ${best.name} (${ms(best.ms)})`);
@@ -1035,6 +1044,14 @@ async function main() {
       }
     }
   }
+
+  // Notes on methodology
+  console.log('\n=== Notes ===');
+  console.log('• Scoped 1k: Ceryn scope includes provide() + resolve() + disposeSync() with');
+  console.log('  full LIFO cleanup. Tsyringe child container has no disposal semantics.');
+  console.log('  Ceryn trades raw speed for correctness (auto-disposal, scope-local overrides).');
+  console.log('• Async Factory: Only Ceryn supports native async factory resolution with');
+  console.log('  promise deduplication and per-caller AbortSignal cancellation.');
 
   console.log('\nBenchmark complete');
 }
