@@ -13,7 +13,7 @@ import 'reflect-metadata';
 import { Bench } from 'tinybench';
 import v8 from 'v8';
 
-import { Container, Injectable, Inject, Module } from '../src/index.js';
+import { Container, Injectable, Inject, Module, Lifecycle } from '../src/index.js';
 import { token } from '../src/core/token.js';
 import { MetadataRegistry } from '../src/registry/index.js';
 
@@ -112,6 +112,8 @@ interface Adapter {
   warmup(iter: number): Promise<void> | void;
   requestCycle(reqs: number): Promise<void> | void;
   bridgeCycle(reqs: number): Promise<void> | void;
+  scopedCycle?(reqs: number): Promise<void> | void;
+  asyncFactoryCycle?(reqs: number): Promise<void> | void;
   heap(): number;
 }
 
@@ -345,14 +347,37 @@ function buildCerynAdapter(): Adapter {
     auth: AuthControllerT,
   };
 
+  // Scoped lifecycle tokens and classes
+  const RequestIdT = token<string>('RequestId');
+  const ScopedServiceT = token<{ id: string }>('ScopedService');
+
+  @Injectable({ provide: ScopedServiceT, lifecycle: Lifecycle.Scoped })
+  class ScopedService {
+    constructor(@Inject(RequestIdT) public readonly id: string) {}
+  }
+
+  // Async factory token
+  const AsyncDbT = token<{ connection: string }>('AsyncDb');
+
   @Module({
-    providers: allRelics,
-    exports: [...Object.values(CtrlT), LoggerT],
+    providers: [
+      ...allRelics,
+      ScopedService,
+      {
+        provide: AsyncDbT,
+        useFactory: async () => {
+          // Simulate async connection setup
+          return { connection: 'pg://localhost/bench' };
+        },
+        lifecycle: Lifecycle.Singleton,
+      },
+    ],
+    exports: [...Object.values(CtrlT), LoggerT, ScopedServiceT, AsyncDbT],
     shadowPolicy: 'allow',
   })
-  class AppVault {}
+  class FullAppVault {}
 
-  const buildVault = () => Container.from(AppVault);
+  const buildVault = () => Container.from(FullAppVault);
 
   let cold: ReturnType<typeof buildVault> | null = null;
   let warm: ReturnType<typeof buildVault> | null = null;
@@ -387,6 +412,21 @@ function buildCerynAdapter(): Adapter {
       const g = warm ?? (warm = buildVault());
       for (let k = 0; k < n; k++) {
         g.resolve(LoggerT);
+      }
+    },
+    scopedCycle(n: number) {
+      const g = warm ?? (warm = buildVault());
+      for (let k = 0; k < n; k++) {
+        const scope = g.createScope();
+        scope.provide(RequestIdT, `req-${k}`);
+        void (scope.resolve(ScopedServiceT) as { id: string }).id;
+        scope.disposeSync();
+      }
+    },
+    async asyncFactoryCycle(n: number) {
+      const g = warm ?? (warm = buildVault());
+      for (let k = 0; k < n; k++) {
+        await g.resolveAsync(AsyncDbT);
       }
     },
     heap() {
@@ -521,6 +561,15 @@ function buildTsyringeAdapter(): Adapter {
       const root = ensureSharedRoot();
       for (let i = 0; i < n; i++) {
         root.resolve(TOK.Logger);
+      }
+    },
+    scopedCycle(n) {
+      const root = ensureSharedRoot();
+      for (let i = 0; i < n; i++) {
+        const child = root.createChildContainer();
+        child.register('RequestId', { useValue: `req-${i}` });
+        child.resolve<any>(TOK.Logger); // resolve something from child
+        child.reset();
       }
     },
     heap() {
@@ -883,6 +932,26 @@ async function main() {
     });
   }
 
+  // Scoped lifecycle: create/resolve/dispose per iteration (only adapters that support it)
+  for (const a of adapters) {
+    if (a.scopedCycle) {
+      const scopedFn = a.scopedCycle.bind(a);
+      bench.add(`${a.name}: Scoped 1k`, () => {
+        scopedFn(1_000);
+      });
+    }
+  }
+
+  // Async factory resolution (only adapters that support it)
+  for (const a of adapters) {
+    if (a.asyncFactoryCycle) {
+      const asyncFn = a.asyncFactoryCycle.bind(a);
+      bench.add(`${a.name}: Async Factory 100`, async () => {
+        await asyncFn(100);
+      });
+    }
+  }
+
   console.log(`[phase] running ${bench.tasks?.length ?? 0} tasks`);
   await bench.run();
 
@@ -890,7 +959,14 @@ async function main() {
 
   console.log('\n=== Percentile Analysis ===\n');
 
-  for (const phase of ['Cold boot', 'Warm 1k requests', 'Burst 10k', 'Bridge 5k'] as const) {
+  for (const phase of [
+    'Cold boot',
+    'Warm 1k requests',
+    'Burst 10k',
+    'Bridge 5k',
+    'Scoped 1k',
+    'Async Factory 100',
+  ] as const) {
     console.log(`━━━ ${phase} ━━━\n`);
 
     for (const adapter of adapters) {
@@ -928,7 +1004,14 @@ async function main() {
     return s * 1000;
   };
 
-  for (const phase of ['Cold boot', 'Warm 1k requests', 'Burst 10k', 'Bridge 5k'] as const) {
+  for (const phase of [
+    'Cold boot',
+    'Warm 1k requests',
+    'Burst 10k',
+    'Bridge 5k',
+    'Scoped 1k',
+    'Async Factory 100',
+  ] as const) {
     console.log(`\n-- ${phase}`);
     const rows = adapters.map((a) => ({ name: a.name, ms: getPeriodMs(`${a.name}: ${phase}`) }));
     rows.forEach((r) => console.log(`${r.name.padEnd(12)} ${ms(r.ms)}`));
