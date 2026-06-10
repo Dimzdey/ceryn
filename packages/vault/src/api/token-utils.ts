@@ -10,14 +10,15 @@ import { token, type Token } from '../core/token.js';
  *
  * @example
  * ```typescript
+ * interface UserRepository {}
+ * interface UserService {}
+ *
  * const tokens = createTokenGroup('User', {
- *   Repository: null as UserRepository,
- *   Service: null as UserService,
- *   Controller: null as UserController,
+ *   Repository: undefined as unknown as UserRepository,
+ *   Service: undefined as unknown as UserService,
  * });
  * // tokens.Repository: Token<UserRepository>
  * // tokens.Service: Token<UserService>
- * // tokens.Controller: Token<UserController>
  * ```
  */
 export function createTokenGroup<T extends Record<string, unknown>>(

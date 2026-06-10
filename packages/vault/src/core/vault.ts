@@ -75,8 +75,8 @@ function assertValidToken(token: unknown): asserts token is Token {
  * Vault: minimal, deterministic DI container core.
  *
  * This module organizes registration, resolution (sync + async), cross-vault
- * exposure, and a tiny hot-path MRU cache. The implementation favors clarity
- * and predictable invariants: registrations are sealed via finalizeEntries(),
+ * exposure, and a singleton instance cache. The implementation favors clarity
+ * and predictable invariants: registrations are sealed after construction,
  * async singletons collapse via entry.promise, and lazy fused vaults are
  * materialized on-demand with rollback on failure.
  */

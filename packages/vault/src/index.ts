@@ -22,14 +22,6 @@ export * from './core/token.js';
 export { Scope } from './core/scope.js';
 export { Vault as CoreVault } from './core/vault.js';
 
-// Global types
-export type {
-  RelicMetadata as ManifestRelicMetadata,
-  VaultMetadata as ManifestVaultMetadata,
-  TokenMetadata,
-  VaultManifest,
-} from './types/global.js';
-
 // Errors
 export {
   AggregateDisposalError,

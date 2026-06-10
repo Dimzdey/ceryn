@@ -178,23 +178,6 @@ export class TokenCollisionError extends Error {
   }
 }
 
-export class AliasCollisionError extends Error {
-  constructor(
-    public alias: string,
-    public mappedTo: string,
-    public attemptedFor: string,
-    public vaultName: string
-  ) {
-    const dev = [
-      'Alias collision',
-      '',
-      `Alias '${alias}' in vault '${vaultName}' maps to '${mappedTo}', cannot remap to '${attemptedFor}'.`,
-    ];
-    super(format(`Alias '${alias}' already maps to '${mappedTo}' in vault '${vaultName}'.`, dev));
-    this.name = 'AliasCollisionError';
-  }
-}
-
 export class MissingRelicDecoratorError extends Error {
   constructor(public ctorName: string) {
     const dev = [
@@ -349,15 +332,14 @@ export class InvalidTokenError extends Error {
     const dev = [
       'Invalid token parameter',
       '',
-      `Expected a valid Token object with 'id' property.`,
+      `Expected a valid Token object created with token<T>().`,
       '',
       'Received:',
       `  ${tokenString}`,
       '',
       'Valid token usage:',
-      `  - Token.for('ServiceName')`,
-      `  - Token.for('ServiceName', { ... })`,
-      `  - class ServiceT extends Token<ServiceClass>('ServiceName') {}`,
+      `  const MyToken = token<MyService>('MyService');`,
+      `  vault.resolve(MyToken);`,
     ];
 
     super(format('Invalid token parameter.', dev));

@@ -2,7 +2,6 @@ import { describe, expect, it } from 'vitest';
 
 import {
   AggregateDisposalError,
-  AliasCollisionError,
   CircularDependencyError,
   CircularVaultAttachmentError,
   FactoryExecutionError,
@@ -53,9 +52,6 @@ describe('error classes', () => {
 
     const tokenCollision = new TokenCollisionError('tok_1', 'A', 'B');
     expect(tokenCollision.newOwner).toBe('B');
-
-    const aliasCollision = new AliasCollisionError('alias', 'tok_1', 'tok_2', 'Vault');
-    expect(aliasCollision.alias).toBe('alias');
 
     const missingRelic = new MissingRelicDecoratorError('SomeClass');
     expect(missingRelic.message).toContain('SomeClass');

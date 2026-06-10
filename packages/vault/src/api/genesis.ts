@@ -9,10 +9,10 @@ import type { Constructor } from '../types/types.js';
  * It handles lazy vault instantiation, circular dependency detection, and caching.
  *
  * @remarks
- * - Use `Genesis.resolve()` to create a vault from a decorated vault class
+ * - Use `Genesis.from()` to create a vault from a decorated vault class
  * - Automatically caches vault instances for reuse
  * - Detects and prevents circular vault dependencies
- * - Use `vault.beginScope()` to create scoped resolution contexts
+ * - Use `vault.createScope()` to create scoped resolution contexts
  */
 export class Genesis {
   private static lazyVaults = new Map<Constructor, Vault>();
