@@ -32,12 +32,25 @@ export type {
 
 // Errors
 export {
+  AggregateDisposalError,
   CircularDependencyError,
   CircularVaultAttachmentError,
+  FactoryExecutionError,
   InvalidProviderError,
+  InvalidTokenError,
+  InvalidVaultConfigError,
+  LazyFusionResolverMissingError,
+  LazyResolverInvalidReturnError,
+  LifecycleViolationError,
+  MissingRelicDecoratorError,
   MissingSummonDecoratorError,
+  MultipleShadowPolicyViolationsError,
   RelicNotExposedError,
   RelicNotFoundError,
   ScopeDisposedError,
+  ScopedWithoutScopeError,
+  ShadowPolicyViolationError,
+  TokenCollisionError,
+  UnconstructableRelicError,
+  VaultDisposedError,
 } from './errors/errors.js';
-// test comment
