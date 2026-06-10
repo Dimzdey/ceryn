@@ -390,7 +390,7 @@ Ceryn Vault is designed for performance-critical applications. Based on benchmar
 **Key Performance Features:**
 
 - Zero reflection overhead (all metadata captured at decorator time)
-- Hot-path MRU caching for frequently accessed dependencies
+- Singleton instance caching for O(1) repeated resolutions
 - Bit-flag lifecycle checks (faster than string comparisons)
 - Frozen metadata objects (VM optimization friendly)
 - Lazy vault instantiation (pay-as-you-go)
@@ -405,8 +405,9 @@ Ceryn Vault is designed for performance-critical applications. Based on benchmar
 Run benchmarks yourself:
 
 ```bash
-npm run bench:comparison
+npm run bench:di-comp
 npm run bench:genesis:perf
+npm run bench:ultimate
 ```
 
 ## Architecture Patterns

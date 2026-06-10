@@ -48,9 +48,12 @@ import type { Vault } from './vault.js';
 
 /**
  * Convert an AbortSignal into a Promise that rejects with an AbortError when
- * the signal fires. Returns `null` when no signal is provided. The returned
- * promise is intended for use with Promise.race to implement per-caller
- * cancellation semantics.
+ * the signal fires. Returns `null` when no signal is provided.
+ *
+ * Note: The returned Promise (and its closure) stays in memory until the signal
+ * fires or the signal itself is GC'd. This is inherent to the Promise.race
+ * cancellation pattern and is minimal overhead (one closure per in-flight
+ * async resolve). The event listener self-removes via the handler logic.
  */
 function abortAsPromise(signal?: AbortSignal) {
   if (!signal) return null;
