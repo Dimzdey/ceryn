@@ -1,4 +1,5 @@
 {
+  "extends": "semantic-release-monorepo",
   "branches": ["main"],
   "repositoryUrl": "https://github.com/Dimzdey/ceryn",
   "plugins": [
@@ -7,11 +8,12 @@
       {
         "preset": "conventionalcommits",
         "releaseRules": [
-          { "breaking": true, "scope": "vault", "release": "major" },
-          { "type": "feat", "scope": "vault", "release": "minor" },
-          { "type": "fix", "scope": "vault", "release": "patch" },
-          { "type": "perf", "scope": "vault", "release": "patch" },
-          { "release": false }
+          { "type": "feat", "release": "minor" },
+          { "type": "fix", "release": "patch" },
+          { "type": "perf", "release": "patch" },
+          { "type": "docs", "release": false },
+          { "type": "chore", "release": false },
+          { "breaking": true, "release": "major" }
         ]
       }
     ],
@@ -38,7 +40,7 @@
       "@semantic-release/git",
       {
         "assets": ["package.json", "CHANGELOG.md"],
-        "message": "chore(release): ${nextRelease.version} [skip ci]\n\n${nextRelease.notes}"
+        "message": "chore(release): ${nextRelease.gitTag} [skip ci]\n\n${nextRelease.notes}"
       }
     ],
     [
