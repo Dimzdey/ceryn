@@ -1,3 +1,7 @@
+## 2.1.0 (2026-06-10)
+
+* feat(vault): add scoped lifecycle and async factory benchmark phases ([f6e0ec9](https://github.com/Dimzdey/ceryn/commit/f6e0ec9))
+
 ## 2.0.0 (2026-06-10)
 
 * chore: add docs/ to gitignore ([16b4e48](https://github.com/Dimzdey/ceryn/commit/16b4e48))
