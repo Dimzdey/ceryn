@@ -4,7 +4,7 @@ cahced/
 # Build output
 dist/
 *.tsbuildinfo
-
+docs/
 # Test coverage
 coverage/
 
