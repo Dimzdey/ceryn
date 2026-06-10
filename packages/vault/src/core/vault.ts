@@ -410,23 +410,8 @@ export class Vault {
    * }
    * ```
    */
-  createScope(): Scope & {
-    resolve: <T>(token: Token<T>) => T;
-    resolveAsync: <T>(token: Token<T>, opts?: { signal?: AbortSignal }) => Promise<T>;
-  } {
-    const scope = new Scope(this);
-    const vault = this;
-
-    // Bind resolve methods to this vault with the scope parameter pre-filled
-    const boundResolve = <T>(token: Token<T>): T => vault.resolve(token, { scope });
-    const boundResolveAsync = <T>(token: Token<T>, opts?: { signal?: AbortSignal }): Promise<T> =>
-      vault.resolveAsync(token, { signal: opts?.signal, scope });
-
-    // Return scope with resolve methods attached
-    return Object.assign(scope, {
-      resolve: boundResolve,
-      resolveAsync: boundResolveAsync,
-    });
+  createScope(): Scope {
+    return new Scope(this);
   }
 
   /**

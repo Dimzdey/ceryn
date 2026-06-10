@@ -76,6 +76,11 @@ import { SingletonCache } from './singleton-cache.js';
 import type { CanonicalId, Token } from './token.js';
 import type { Vault } from './vault.js';
 
+/** Shared frozen constants to avoid per-provide allocations */
+const EMPTY_DEPS: readonly CanonicalId[] = Object.freeze([] as CanonicalId[]);
+const EMPTY_ALIASES: readonly string[] = Object.freeze([] as string[]);
+const EMPTY_SUMMONS: readonly (CanonicalId | undefined)[] = Object.freeze([]);
+
 export class Scope {
   /**
    * Tracks whether this scope has been disposed.
@@ -211,44 +216,39 @@ export class Scope {
     }
 
     // Create an Entry for this scope-local value
+    // Uses shared frozen constants to avoid per-call array allocations
     const entry: Entry = {
       token: token.id,
       ctor: undefined,
       factory: undefined,
-      factoryDeps: [],
+      factoryDeps: EMPTY_DEPS,
       metadata: {
         lifecycle: 'transient',
         name: token.id,
-        label: String(token),
+        label: token.label,
       },
-      summons: [],
-      aliases: [],
+      summons: EMPTY_SUMMONS,
+      aliases: EMPTY_ALIASES,
       instance: value,
-      flags: FLAG_HAS_INSTANCE, // Mark as having instance
+      flags: FLAG_HAS_INSTANCE,
     };
 
     this.localRegistrations.set(token.id, entry);
 
-    // Auto-register cleanup if value has dispose() or close()
-    if (
-      value &&
-      (typeof value === 'object' || typeof value === 'function') &&
-      (typeof (value as unknown as Disposable).dispose === 'function' ||
-        typeof (value as unknown as Disposable).close === 'function')
-    ) {
-      const disposer = () => {
-        const disposeFn =
-          (value as unknown as Disposable).dispose ?? (value as unknown as Disposable).close;
-        return disposeFn.call(value);
-      };
+    // Auto-register cleanup only for objects/functions that have dispose/close
+    // Skip primitives (string, number, boolean) entirely — they never have disposers
+    if (value !== null && value !== undefined && typeof value === 'object') {
+      const disposeFn =
+        (value as unknown as Disposable).dispose ?? (value as unknown as Disposable).close;
+      if (typeof disposeFn === 'function') {
+        const disposer = () => disposeFn.call(value);
+        this.registerDisposer(disposer);
 
-      this.registerDisposer(disposer);
-
-      // Track this disposer by token so it can be removed on override
-      if (!this.tokenDisposers) {
-        this.tokenDisposers = new Map();
+        if (!this.tokenDisposers) {
+          this.tokenDisposers = new Map();
+        }
+        this.tokenDisposers.set(token.id, disposer);
       }
-      this.tokenDisposers.set(token.id, disposer);
     }
   }
 
