@@ -7,8 +7,8 @@ A **zero-reflection** dependency injection container for TypeScript that priorit
 - **Zero Reflection**: No runtime reflection overhead - all metadata captured at decorator evaluation time
 - **Blazingly Fast**: 57x faster cold boot than nearest competitor, 1.5–2x faster warm resolution
 - **Type-Safe**: Full TypeScript support with compile-time type checking via phantom types
-- **Explicit Over Implicit**: Every dependency must be explicitly declared with `@Summon()`
-- **Modular Architecture**: Compose vaults with fusion for clean separation of concerns
+- **Explicit Over Implicit**: Every dependency must be explicitly declared with `@Inject()`
+- **Modular Architecture**: Compose modules with imports for clean separation of concerns
 - **Modern**: Built for ES modules, Node.js 18+, and contemporary TypeScript
 
 ## Installation
@@ -20,39 +20,39 @@ npm install @ceryn/vault
 ## Quick Start
 
 ```typescript
-import { Genesis, Relic, Summon, Vault, token } from '@ceryn/vault';
+import { Container, Injectable, Inject, Module, token } from '@ceryn/vault';
 
 // 1. Create type-safe tokens
 const DatabaseT = token<Database>('Database');
 const UserServiceT = token<UserService>('UserService');
 
-// 2. Define injectable relics with explicit dependencies
-@Relic({ provide: DatabaseT })
+// 2. Define injectable providers with explicit dependencies
+@Injectable({ provide: DatabaseT })
 class Database {
   query(sql: string) {
     return `Result: ${sql}`;
   }
 }
 
-@Relic({ provide: UserServiceT })
+@Injectable({ provide: UserServiceT })
 class UserService {
-  constructor(@Summon(DatabaseT) private db: Database) {}
+  constructor(@Inject(DatabaseT) private db: Database) {}
 
   getUser(id: number) {
     return this.db.query(`SELECT * FROM users WHERE id = ${id}`);
   }
 }
 
-// 3. Create a vault to compose your dependencies
-@Vault({
-  relics: [Database, UserService],
-  reveal: [UserServiceT],
+// 3. Create a module to compose your dependencies
+@Module({
+  providers: [Database, UserService],
+  exports: [UserServiceT],
 })
-class AppVault {}
+class AppModule {}
 
 // 4. Bootstrap and resolve
-const genesis = Genesis.from(AppVault);
-const userService = genesis.resolve(UserServiceT);
+const container = Container.create(AppModule);
+const userService = container.resolve(UserServiceT);
 
 console.log(userService.getUser(1));
 // Output: Result: SELECT * FROM users WHERE id = 1
@@ -73,14 +73,14 @@ const ConfigT = token<AppConfig>('AppConfig');
 const CacheT = token<Cache>('Cache');
 ```
 
-### Relics
+### Providers
 
-Relics are injectable classes registered with the DI container. Use the `@Relic()` decorator to mark classes as injectable.
+Providers are injectable classes registered with the DI container. Use the `@Injectable()` decorator to mark classes as injectable.
 
 ```typescript
-import { Relic, Summon, Lifecycle } from '@ceryn/vault';
+import { Injectable, Inject, Lifecycle } from '@ceryn/vault';
 
-@Relic({ provide: LoggerT })
+@Injectable({ provide: LoggerT })
 class Logger {
   log(message: string) {
     console.log(`[LOG] ${message}`);
@@ -88,14 +88,14 @@ class Logger {
 }
 
 // With explicit lifecycle
-@Relic({
+@Injectable({
   provide: RequestHandlerT,
   lifecycle: Lifecycle.Transient,
 })
 class RequestHandler {
   constructor(
-    @Summon(LoggerT) private logger: Logger,
-    @Summon(ConfigT) private config: AppConfig
+    @Inject(LoggerT) private logger: Logger,
+    @Inject(ConfigT) private config: AppConfig
   ) {}
 }
 ```
@@ -104,88 +104,88 @@ class RequestHandler {
 
 Ceryn Vault supports three lifecycle strategies:
 
-- **Singleton** (default): One instance per vault, shared across all resolutions
+- **Singleton** (default): One instance per module, shared across all resolutions
 - **Scoped**: One instance per logical scope (e.g., per HTTP request)
 - **Transient**: Fresh instance for every resolution
 
 ```typescript
 import { Lifecycle } from '@ceryn/vault';
 
-@Relic({ provide: ConfigT, lifecycle: Lifecycle.Singleton })
+@Injectable({ provide: ConfigT, lifecycle: Lifecycle.Singleton })
 class Config {}
 
-@Relic({ provide: RequestContextT, lifecycle: Lifecycle.Scoped })
+@Injectable({ provide: RequestContextT, lifecycle: Lifecycle.Scoped })
 class RequestContext {}
 
-@Relic({ provide: FactoryT, lifecycle: Lifecycle.Transient })
+@Injectable({ provide: FactoryT, lifecycle: Lifecycle.Transient })
 class Factory {}
 ```
 
-### Vaults
+### Modules
 
-Vaults are containers that organize and compose your dependencies. They support modular architecture through vault fusion.
+Modules are containers that organize and compose your dependencies. They support modular architecture through module composition.
 
 ```typescript
-import { Vault } from '@ceryn/vault';
+import { Module } from '@ceryn/vault';
 
-@Vault({
-  relics: [Logger, Config], // Classes to register
-  reveal: [LoggerT, ConfigT], // Tokens to expose
-  name: 'CoreVault', // Optional name for debugging
+@Module({
+  providers: [Logger, Config], // Classes to register
+  exports: [LoggerT, ConfigT], // Tokens to expose
+  name: 'CoreModule', // Optional name for debugging
 })
-class CoreVault {}
+class CoreModule {}
 ```
 
-### Vault Fusion
+### Module Composition
 
-Compose vaults together to create modular, maintainable architectures. Only revealed tokens are accessible to fused vaults.
+Compose modules together to create modular, maintainable architectures. Only exported tokens are accessible to importing modules.
 
 ```typescript
-// Core vault with shared services
-@Vault({
-  relics: [Logger, Config],
-  reveal: [LoggerT, ConfigT],
-  aether: true, // Transitive accessibility
+// Core module with shared services
+@Module({
+  providers: [Logger, Config],
+  exports: [LoggerT, ConfigT],
+  global: true, // Transitive accessibility
 })
-class CoreVault {}
+class CoreModule {}
 
-// Database vault that uses core services
-@Vault({
-  relics: [Database, DatabaseConfig],
-  reveal: [DatabaseT],
-  fuse: [CoreVault], // Import core services
+// Database module that uses core services
+@Module({
+  providers: [Database, DatabaseConfig],
+  exports: [DatabaseT],
+  imports: [CoreModule], // Import core services
 })
-class DatabaseVault {}
+class DatabaseModule {}
 
-// Application vault composing everything
-@Vault({
-  relics: [UserService, UserRepository],
-  reveal: [UserServiceT],
-  fuse: [CoreVault, DatabaseVault],
+// Application module composing everything
+@Module({
+  providers: [UserService, UserRepository],
+  exports: [UserServiceT],
+  imports: [CoreModule, DatabaseModule],
 })
-class AppVault {}
+class AppModule {}
 ```
 
-### Genesis
+### Container
 
-Genesis is the entry point for bootstrapping vault instances with lazy instantiation and caching.
+Container is the entry point for bootstrapping module instances with lazy instantiation and caching.
 
 ```typescript
-import { Genesis } from '@ceryn/vault';
+import { Container } from '@ceryn/vault';
 
-// Create vault instance (cached)
-const genesis = Genesis.from(AppVault);
+// Create module instance (cached)
+const container = Container.create(AppModule);
 
 // Resolve singleton dependencies
-const userService = genesis.resolve(UserServiceT);
+const userService = container.resolve(UserServiceT);
 
 // Create scopes for request-level dependencies
-const scope = genesis.createScope();
+const scope = container.createScope();
 const handler = scope.resolve(HandlerT);
 await scope.dispose();
 
 // Clear cache for testing
-Genesis.clearCache();
+Container.clearCache();
 ```
 
 ## Advanced Features
@@ -197,14 +197,14 @@ Create isolated scopes for request-level dependencies:
 ```typescript
 import { Lifecycle } from '@ceryn/vault';
 
-@Relic({ provide: RequestContextT, lifecycle: Lifecycle.Scoped })
+@Injectable({ provide: RequestContextT, lifecycle: Lifecycle.Scoped })
 class RequestContext {
-  constructor(@Summon(ConfigT) private config: Config) {}
+  constructor(@Inject(ConfigT) private config: Config) {}
 }
 
-@Relic({ provide: HandlerT, lifecycle: Lifecycle.Scoped })
+@Injectable({ provide: HandlerT, lifecycle: Lifecycle.Scoped })
 class RequestHandler {
-  constructor(@Summon(RequestContextT) private ctx: RequestContext) {}
+  constructor(@Inject(RequestContextT) private ctx: RequestContext) {}
 
   handle() {
     // ... handle request
@@ -213,7 +213,7 @@ class RequestHandler {
 
 // Create a scope for each request
 async function handleRequest(req: Request) {
-  const scope = genesis.createScope();
+  const scope = container.createScope();
 
   try {
     // Scoped instances are automatically created and isolated per scope
@@ -227,7 +227,7 @@ async function handleRequest(req: Request) {
 
 ### Dynamic Scope Registration
 
-Dynamically provide values to scopes at runtime. Scope-local registrations override vault registrations:
+Dynamically provide values to scopes at runtime. Scope-local registrations override module registrations:
 
 ```typescript
 // Define tokens for runtime values
@@ -236,12 +236,12 @@ const HttpResponseT = token<Response>('HttpResponse');
 const RequestIdT = token<string>('RequestId');
 
 // Create a handler that depends on runtime values
-@Relic({ provide: HandlerT })
+@Injectable({ provide: HandlerT })
 class RequestHandler {
   constructor(
-    @Summon(HttpRequestT) private req: Request,
-    @Summon(HttpResponseT) private res: Response,
-    @Summon(RequestIdT) private requestId: string
+    @Inject(HttpRequestT) private req: Request,
+    @Inject(HttpResponseT) private res: Response,
+    @Inject(RequestIdT) private requestId: string
   ) {}
 
   handle() {
@@ -252,7 +252,7 @@ class RequestHandler {
 
 // In your HTTP server
 app.use(async (req, res) => {
-  const scope = genesis.createScope();
+  const scope = container.createScope();
 
   try {
     // Provide runtime values to the scope
@@ -272,7 +272,7 @@ app.use(async (req, res) => {
 **Scope Methods:**
 
 - `provide<T>(token: Token<T>, value: T)`: Register a scope-local value
-- `has<T>(token: Token<T>): boolean`: Check if token exists in scope or vault
+- `has<T>(token: Token<T>): boolean`: Check if token exists in scope or module
 - `tryResolve<T>(token: Token<T>): T | undefined`: Safe resolution with fallback
 - `override<T>(token: Token<T>, value: T)`: Replace existing registration
 
@@ -304,10 +304,10 @@ scope.override(DatabaseT, mockDb);
 Register dependencies using factory functions:
 
 ```typescript
-import { Vault } from '@ceryn/vault';
+import { Module } from '@ceryn/vault';
 
-@Vault({
-  relics: [
+@Module({
+  providers: [
     {
       provide: LoggerT,
       useFactory: (config: AppConfig) => new Logger(config.logLevel),
@@ -316,7 +316,7 @@ import { Vault } from '@ceryn/vault';
     },
   ],
 })
-class AppVault {}
+class AppModule {}
 ```
 
 ### Value Providers
@@ -324,28 +324,28 @@ class AppVault {}
 Register pre-created values or configuration objects:
 
 ```typescript
-@Vault({
-  relics: [
+@Module({
+  providers: [
     {
       provide: ConfigT,
       useValue: { apiKey: 'secret', logLevel: 'info' },
     },
   ],
 })
-class AppVault {}
+class AppModule {}
 ```
 
-### Aether Mode
+### Global Mode
 
-Enable transitive accessibility for shared vaults:
+Enable transitive accessibility for shared modules:
 
 ```typescript
-@Vault({
-  relics: [Logger, Config, Cache],
-  reveal: [LoggerT, ConfigT, CacheT],
-  aether: true, // All descendants can access these services
+@Module({
+  providers: [Logger, Config, Cache],
+  exports: [LoggerT, ConfigT, CacheT],
+  global: true, // All descendants can access these services
 })
-class InfrastructureVault {}
+class InfrastructureModule {}
 ```
 
 ### Custom Lazy Resolvers
@@ -353,18 +353,18 @@ class InfrastructureVault {}
 Provide custom resolution logic for advanced scenarios:
 
 ```typescript
-const customResolver = (vaultClass: Constructor) => {
-  // Custom vault instantiation logic
-  return new Vault(/* ... */);
+const customResolver = (moduleClass: Constructor) => {
+  // Custom module instantiation logic
+  return new Module(/* ... */);
 };
 
-@Vault({
-  relics: [
+@Module({
+  providers: [
     /* ... */
   ],
   lazyResolve: customResolver,
 })
-class CustomVault {}
+class CustomModule {}
 ```
 
 ### Telemetry Hooks
@@ -372,15 +372,15 @@ class CustomVault {}
 Monitor instantiation performance:
 
 ```typescript
-@Vault({
-  relics: [
+@Module({
+  providers: [
     /* ... */
   ],
   onInstantiate: (token: string, durationNs: number) => {
     console.log(`${token} instantiated in ${durationNs}ns`);
   },
 })
-class ObservableVault {}
+class ObservableModule {}
 ```
 
 ## Performance
@@ -396,7 +396,7 @@ Compared against popular TypeScript DI containers on a realistic workload (6 end
 | **Cold boot** | **0.25 ms** | 95 ms | 140 ms | 14 ms | 17 ms |
 | **Warm 1k requests** | **134 ms** | 185 ms | 312 ms | 296 ms | 288 ms |
 | **Burst 10k** | **1.08 s** | 1.54 s | 2.59 s | 2.47 s | 2.40 s |
-| **Cross-vault resolve 5k** | **49 ms** | 426 ms | 693 ms | 98 ms | 138 ms |
+| **Cross-module resolve 5k** | **49 ms** | 426 ms | 693 ms | 98 ms | 138 ms |
 
 > **Cold boot is 57–559x faster** than alternatives. Warm-state resolution is 1.5–2.3x faster. Measured on Node v22, median values.
 
@@ -406,7 +406,7 @@ Compared against popular TypeScript DI containers on a realistic workload (6 end
 - **Bit-flag lifecycles** — integer bitwise checks instead of string comparisons on hot path
 - **Singleton instance cache** — O(1) Map lookup for repeated resolutions
 - **Frozen metadata** — V8 optimization-friendly immutable objects
-- **Lazy vault instantiation** — fused vaults materialized on first cross-vault resolve
+- **Lazy module instantiation** — imported modules materialized on first cross-module resolve
 
 Run benchmarks yourself:
 
@@ -420,36 +420,36 @@ npm run bench
 
 ```typescript
 // Infrastructure Layer
-@Vault({
-  relics: [Database, Cache, Logger],
-  reveal: [DatabaseT, CacheT, LoggerT],
-  aether: true,
+@Module({
+  providers: [Database, Cache, Logger],
+  exports: [DatabaseT, CacheT, LoggerT],
+  global: true,
 })
-class InfraVault {}
+class InfraModule {}
 
 // Repository Layer
-@Vault({
-  relics: [UserRepository, OrderRepository],
-  reveal: [UserRepoT, OrderRepoT],
-  fuse: [InfraVault],
+@Module({
+  providers: [UserRepository, OrderRepository],
+  exports: [UserRepoT, OrderRepoT],
+  imports: [InfraModule],
 })
-class DataVault {}
+class DataModule {}
 
 // Service Layer
-@Vault({
-  relics: [UserService, OrderService],
-  reveal: [UserServiceT, OrderServiceT],
-  fuse: [DataVault],
+@Module({
+  providers: [UserService, OrderService],
+  exports: [UserServiceT, OrderServiceT],
+  imports: [DataModule],
 })
-class ServiceVault {}
+class ServiceModule {}
 
 // Presentation Layer
-@Vault({
-  relics: [UserController, OrderController],
-  reveal: [UserControllerT, OrderControllerT],
-  fuse: [ServiceVault],
+@Module({
+  providers: [UserController, OrderController],
+  exports: [UserControllerT, OrderControllerT],
+  imports: [ServiceModule],
 })
-class AppVault {}
+class AppModule {}
 ```
 
 ### Request-Scoped HTTP Handler
@@ -458,20 +458,20 @@ class AppVault {}
 import { Lifecycle } from '@ceryn/vault';
 
 // Scoped services are instantiated once per scope
-@Relic({ provide: RequestContextT, lifecycle: Lifecycle.Scoped })
+@Injectable({ provide: RequestContextT, lifecycle: Lifecycle.Scoped })
 class RequestContext {
   public readonly requestId = crypto.randomUUID();
 
-  constructor(@Summon(LoggerT) private logger: Logger) {
+  constructor(@Inject(LoggerT) private logger: Logger) {
     this.logger.log(`Request ${this.requestId} started`);
   }
 }
 
-@Relic({ provide: RequestHandlerT, lifecycle: Lifecycle.Scoped })
+@Injectable({ provide: RequestHandlerT, lifecycle: Lifecycle.Scoped })
 class RequestHandler {
   constructor(
-    @Summon(RequestContextT) private ctx: RequestContext,
-    @Summon(UserServiceT) private userService: UserService
+    @Inject(RequestContextT) private ctx: RequestContext,
+    @Inject(UserServiceT) private userService: UserService
   ) {}
 
   async handle(userId: string) {
@@ -482,11 +482,11 @@ class RequestHandler {
 
 // In your HTTP server
 app.get('/api/user/:id', async (req, res) => {
-  // Create scope - binds resolve methods to this vault
-  const scope = genesis.createScope();
+  // Create scope - binds resolve methods to this module
+  const scope = container.createScope();
 
   try {
-    // All Lifecycle.Scoped relics are automatically isolated to this scope
+    // All Lifecycle.Scoped providers are automatically isolated to this scope
     const handler = scope.resolve(RequestHandlerT);
     const result = await handler.handle(req.params.id);
     res.json(result);
@@ -503,15 +503,15 @@ Ceryn Vault provides detailed error messages for common issues:
 ```typescript
 import {
   CircularDependencyError,
-  RelicNotFoundError,
-  RelicNotExposedError,
-  MissingSummonDecoratorError,
+  ProviderNotFoundError,
+  ProviderNotExposedError,
+  MissingInjectDecoratorError,
 } from '@ceryn/vault';
 
 try {
-  const service = genesis.resolve(ServiceT);
+  const service = container.resolve(ServiceT);
 } catch (error) {
-  if (error instanceof RelicNotFoundError) {
+  if (error instanceof ProviderNotFoundError) {
     console.error('Service not registered');
   } else if (error instanceof CircularDependencyError) {
     console.error('Circular dependency detected');
@@ -524,26 +524,26 @@ try {
 Ceryn Vault is designed with testing in mind:
 
 ```typescript
-import { Genesis } from '@ceryn/vault';
-import { StaticRelicRegistry } from '@ceryn/vault';
+import { Container } from '@ceryn/vault';
+import { MetadataRegistry } from '@ceryn/vault';
 
 describe('UserService', () => {
   beforeEach(() => {
     // Reset registries between tests
-    StaticRelicRegistry.resetForTests();
-    Genesis.clearCache();
+    MetadataRegistry.resetForTests();
+    Container.clearCache();
   });
 
   it('should get user', () => {
-    // Create test vault with mocks
-    @Vault({
-      relics: [{ provide: DatabaseT, useValue: mockDatabase }, UserService],
-      reveal: [UserServiceT],
+    // Create test module with mocks
+    @Module({
+      providers: [{ provide: DatabaseT, useValue: mockDatabase }, UserService],
+      exports: [UserServiceT],
     })
-    class TestVault {}
+    class TestModule {}
 
-    const genesis = Genesis.from(TestVault);
-    const service = genesis.resolve(UserServiceT);
+    const container = Container.create(TestModule);
+    const service = container.resolve(UserServiceT);
 
     expect(service.getUser(1)).toBeDefined();
   });
@@ -555,24 +555,24 @@ describe('UserService', () => {
 ### Core Exports
 
 - `token<T>(label?: string): Token<T>` - Create a type-safe injection token
-- `@Relic(options: RelicOptions)` - Mark a class as injectable
-- `@Summon(token: Token<T>)` - Inject a dependency in constructor
-- `@Vault(config: VaultConfig)` - Define a dependency container
-- `Genesis.from(vaultClass: Constructor): Vault` - Bootstrap a vault
+- `@Injectable(options: InjectableOptions)` - Mark a class as injectable
+- `@Inject(token: Token<T>)` - Inject a dependency in constructor
+- `@Module(config: ModuleConfig)` - Define a dependency container
+- `Container.create(moduleClass: Constructor): Container` - Bootstrap a module
 
 ### Types
 
 - `Token<T>` - Type-safe injection token
 - `Lifecycle` - Lifecycle enum (Singleton, Scoped, Transient)
-- `VaultConfig` - Vault configuration options
+- `ModuleConfig` - Module configuration options
 - `Provider` - Union of ClassProvider, ValueProvider, FactoryProvider
 - `Constructor<T>` - Generic constructor type
 
 ### Utilities
 
-- `StaticRelicRegistry` - Global registry for relic metadata
+- `MetadataRegistry` - Global registry for provider metadata
 - `Scope` - Scoped resolution context
-- `VaultRegistry` - Vault metadata lookup utilities
+- `ModuleRegistry` - Module metadata lookup utilities
 
 ## Design Philosophy
 
@@ -581,7 +581,7 @@ Ceryn Vault is built on these principles:
 1. **Explicit Over Implicit**: Every dependency must be explicitly declared. No magic.
 2. **Type Safety First**: Leverage TypeScript's type system for compile-time guarantees.
 3. **Performance Matters**: Zero-reflection architecture for minimal runtime overhead.
-4. **Modular by Default**: Vault fusion enables clean separation of concerns.
+4. **Modular by Default**: Module composition enables clean separation of concerns.
 5. **Developer Experience**: Clear error messages and intuitive APIs.
 
 ## Requirements
