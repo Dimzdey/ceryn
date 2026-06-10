@@ -1,3 +1,10 @@
+## 2.2.0 (2026-06-10)
+
+* fix(ci): ensure vault builds before fastify typecheck in CI ([13bb0f5](https://github.com/Dimzdey/ceryn/commit/13bb0f5))
+* feat(repo): add @ceryn/fastify adapter with per-request scoped DI ([64eca65](https://github.com/Dimzdey/ceryn/commit/64eca65))
+* feat(repo): add @ceryn/fastify adapter with per-request scoped DI ([8de3ac8](https://github.com/Dimzdey/ceryn/commit/8de3ac8))
+* chore(deps): update package-lock for fastify adapter ([0b71582](https://github.com/Dimzdey/ceryn/commit/0b71582))
+
 ## <small>2.1.2 (2026-06-10)</small>
 
 * fix(vault): update benchmark table with optimized scoped results ([a053fd2](https://github.com/Dimzdey/ceryn/commit/a053fd2))
