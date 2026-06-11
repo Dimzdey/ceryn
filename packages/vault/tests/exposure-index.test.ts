@@ -76,4 +76,30 @@ describe('ExposureIndex', () => {
     root.exposure.clear();
     expect(root.exposure.compute(root)).toBe(first + 1);
   });
+
+  it('exposes all local providers from global vaults to importing descendants', () => {
+    const ExportedToken = token('ExportedGlobal');
+    const UnexportedGlobalToken = token('UnexportedGlobal');
+    const exportedValue = { from: 'exported-global' };
+    const unexportedGlobalValue = { from: 'unexported-global' };
+
+    const globalVault = new Vault({
+      name: 'GlobalVault',
+      providers: [
+        { provide: ExportedToken, useValue: exportedValue },
+        { provide: UnexportedGlobalToken, useValue: unexportedGlobalValue },
+      ],
+      exports: [ExportedToken],
+      global: true,
+    });
+
+    const root = new Vault({
+      name: 'Root',
+      imports: [globalVault],
+    });
+
+    expect(root.canResolve(ExportedToken)).toBe(true);
+    expect(root.canResolve(UnexportedGlobalToken)).toBe(true);
+    expect(root.resolve(UnexportedGlobalToken)).toBe(unexportedGlobalValue);
+  });
 });

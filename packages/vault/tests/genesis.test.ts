@@ -34,8 +34,10 @@ describe('Container', () => {
 
     const vault1 = Container.from(AppModule);
     const vault2 = Container.from(AppModule);
+    const vaultFromCreate = Container.create(AppModule);
 
     expect(vault1).toBe(vault2);
+    expect(vaultFromCreate).toBe(vault1);
     expect(vault1.resolve(SharedToken)).toBeInstanceOf(SharedService);
 
     Container.clearCache();

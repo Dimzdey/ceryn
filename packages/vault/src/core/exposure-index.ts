@@ -154,9 +154,10 @@ export class ExposureIndex {
   private indexVault(vault: Vault): void {
     // Choose target map based on global flag
     const target = vault.isGlobal ? this.global : this.exported;
+    const exposedTokens = vault.isGlobal ? vault.store.canonicalKeys() : vault.exportedTokens;
 
-    // Index each exported token
-    for (const canonical of vault.exportedTokens) {
+    // Global modules expose all local providers; non-global modules expose exports only.
+    for (const canonical of exposedTokens) {
       const entry = vault.store.getByCanonical(canonical);
       if (!entry) continue;
 

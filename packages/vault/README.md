@@ -51,7 +51,7 @@ class UserService {
 class AppModule {}
 
 // 4. Bootstrap and resolve
-const container = Container.create(AppModule);
+const container = Container.from(AppModule);
 const userService = container.resolve(UserServiceT);
 
 console.log(userService.getUser(1));
@@ -174,7 +174,7 @@ Container is the entry point for bootstrapping module instances with lazy instan
 import { Container } from '@ceryn/vault';
 
 // Create module instance (cached)
-const container = Container.create(AppModule);
+const container = Container.from(AppModule);
 
 // Resolve singleton dependencies
 const userService = container.resolve(UserServiceT);
@@ -546,7 +546,7 @@ describe('UserService', () => {
     })
     class TestModule {}
 
-    const container = Container.create(TestModule);
+    const container = Container.from(TestModule);
     const service = container.resolve(UserServiceT);
 
     expect(service.getUser(1)).toBeDefined();
@@ -562,7 +562,8 @@ describe('UserService', () => {
 - `@Injectable(options: InjectableOptions)` - Mark a class as injectable
 - `@Inject(token: Token<T>)` - Inject a dependency in constructor
 - `@Module(config: ModuleConfig)` - Define a dependency container
-- `Container.create(moduleClass: Constructor): Container` - Bootstrap a module
+- `Container.from(moduleClass: Constructor): Vault` - Bootstrap a module
+- `Container.create(moduleClass: Constructor): Vault` - Compatibility alias for `Container.from()`
 
 ### Types
 

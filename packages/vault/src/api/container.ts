@@ -106,6 +106,15 @@ export class Container {
   }
 
   /**
+   * Compatibility alias for `Container.from()`.
+   *
+   * Prefer `Container.from()` in new code.
+   */
+  static create(moduleClass: Constructor): Vault {
+    return this.from(moduleClass);
+  }
+
+  /**
    * Clear all cached vault instances.
    *
    * ⚠️ Use with caution - this will force re-instantiation of all modules.

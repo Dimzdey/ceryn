@@ -12,7 +12,7 @@ export type ScopeProvider<T = unknown> = [Token<T>, T];
  */
 export interface CerynPluginOptions extends FastifyPluginOptions {
   /**
-   * The vault container instance (from Container.create()).
+   * The vault container instance (from Container.from()).
    * Must have a createScope() method.
    */
   container: { createScope(): Scope; dispose(): void | Promise<void> };
@@ -85,7 +85,7 @@ async function cerynPluginFn(fastify: FastifyInstance, opts: CerynPluginOptions)
  * import { cerynPlugin } from '@ceryn/fastify';
  *
  * const app = Fastify();
- * const container = Container.create(AppModule);
+ * const container = Container.from(AppModule);
  *
  * app.register(cerynPlugin, {
  *   container,

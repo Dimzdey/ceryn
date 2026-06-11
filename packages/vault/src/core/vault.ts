@@ -7,6 +7,8 @@ import {
   InvalidProviderError,
   InvalidTokenError,
   InvalidModuleConfigError,
+  LazyFusionResolverMissingError,
+  LazyResolverInvalidReturnError,
   LifecycleViolationError,
   MissingInjectableDecoratorError,
   MultipleShadowPolicyViolationsError,
@@ -1119,6 +1121,7 @@ export class Vault {
     const { vault, canonical } = hit;
     const e = vault.store.getByCanonical(canonical)!;
     const lifecycleFlags = e.flags & LIFECYCLE_MASK;
+    this._validateLifecycleRulesForEntry(token, e, stack);
     if (lifecycleFlags === LIFECYCLE_SINGLETON && e.flags & FLAG_HAS_INSTANCE) {
       this.cache.primeAll(token, e);
       return e.instance as T;
@@ -1142,6 +1145,7 @@ export class Vault {
     const { vault, canonical } = hit;
     const e = vault.store.getByCanonical(canonical)!;
     const lifecycleFlags = e.flags & LIFECYCLE_MASK;
+    this._validateLifecycleRulesForEntry(token, e, stack);
     if (lifecycleFlags === LIFECYCLE_SINGLETON && e.flags & FLAG_HAS_INSTANCE) {
       this.cache.primeAll(token, e);
       return e.instance as T;
@@ -1168,43 +1172,55 @@ export class Vault {
     const entry = this.store.getByCanonical(token);
     if (!entry) return; // Cross-vault resolution, skip validation
 
-    const dependencyLifecycle = entry.metadata.lifecycle;
+    this._validateLifecycleRulesForEntry(token, entry, stack);
+  }
 
-    // Check each consumer in the stack
+  private _validateLifecycleRulesForEntry(
+    dependencyToken: CanonicalId,
+    dependencyEntry: Entry,
+    stack: CanonicalId[]
+  ): void {
+    if (stack.length === 0) return;
+
     for (const consumerToken of stack) {
       const consumerEntry = this.store.getByCanonical(consumerToken);
       if (!consumerEntry) continue; // Cross-vault, skip
 
-      const consumerLifecycle = consumerEntry.metadata.lifecycle;
+      this._validateLifecyclePair(
+        consumerToken,
+        consumerEntry,
+        dependencyToken,
+        dependencyEntry,
+        stack
+      );
+    }
+  }
 
-      // Singleton cannot depend on Scoped or Transient
-      if (consumerLifecycle === Lifecycle.Singleton) {
-        if (
-          dependencyLifecycle === Lifecycle.Scoped ||
-          dependencyLifecycle === Lifecycle.Transient
-        ) {
-          const chain = stack.map((t) => this._formatTokenForDiagnostics(t));
-          throw new LifecycleViolationError(
-            this._formatTokenForDiagnostics(consumerToken),
-            consumerLifecycle,
-            this._formatTokenForDiagnostics(token),
-            dependencyLifecycle,
-            chain
-          );
-        }
-      }
+  private _validateLifecyclePair(
+    consumerToken: CanonicalId,
+    consumerEntry: Entry,
+    dependencyToken: CanonicalId,
+    dependencyEntry: Entry,
+    stack: CanonicalId[]
+  ): void {
+    const consumerLifecycle = consumerEntry.metadata.lifecycle;
+    const dependencyLifecycle = dependencyEntry.metadata.lifecycle;
 
-      // Scoped cannot depend on Transient
-      if (consumerLifecycle === Lifecycle.Scoped && dependencyLifecycle === Lifecycle.Transient) {
-        const chain = stack.map((t) => this._formatTokenForDiagnostics(t));
-        throw new LifecycleViolationError(
-          this._formatTokenForDiagnostics(consumerToken),
-          consumerLifecycle,
-          this._formatTokenForDiagnostics(token),
-          dependencyLifecycle,
-          chain
-        );
-      }
+    const violatesSingletonRule =
+      consumerLifecycle === Lifecycle.Singleton &&
+      (dependencyLifecycle === Lifecycle.Scoped || dependencyLifecycle === Lifecycle.Transient);
+    const violatesScopedRule =
+      consumerLifecycle === Lifecycle.Scoped && dependencyLifecycle === Lifecycle.Transient;
+
+    if (violatesSingletonRule || violatesScopedRule) {
+      const chain = stack.map((t) => this._formatTokenForDiagnostics(t));
+      throw new LifecycleViolationError(
+        this._formatTokenForDiagnostics(consumerToken),
+        consumerLifecycle,
+        this._formatTokenForDiagnostics(dependencyToken),
+        dependencyLifecycle,
+        chain
+      );
     }
   }
 
@@ -1226,7 +1242,11 @@ export class Vault {
    * Check scope cache for scoped instance.
    * @returns Instance if found in scope cache, undefined otherwise
    */
-  private _tryGetFromScopeCache<T>(token: CanonicalId, scope?: Scope): T | undefined {
+  private _tryGetFromScopeCache<T>(
+    token: CanonicalId,
+    scope?: Scope,
+    stack?: CanonicalId[]
+  ): T | undefined {
     if (scope === undefined) return undefined;
 
     // Check scope-local registrations first (highest priority)
@@ -1238,6 +1258,7 @@ export class Vault {
     // Then check scope cache for scoped-lifecycle instances
     const scopedCached = scope.cache.get(token);
     if (scopedCached !== undefined && scopedCached.flags & FLAG_HAS_INSTANCE) {
+      if (stack !== undefined) this._validateLifecycleRulesForEntry(token, scopedCached, stack);
       return scopedCached.instance as T;
     }
     return undefined;
@@ -1280,7 +1301,7 @@ export class Vault {
     if (cachedInstance !== undefined) return cachedInstance;
 
     // Step 2: Check scope cache
-    const scopedInstance = this._tryGetFromScopeCache<T>(token, scope);
+    const scopedInstance = this._tryGetFromScopeCache<T>(token, scope, stack);
     if (scopedInstance !== undefined) return scopedInstance;
 
     // Step 3: Try local resolution
@@ -1371,7 +1392,7 @@ export class Vault {
     if (cachedInstance !== undefined) return cachedInstance;
 
     // Step 2: Check scope cache
-    const scopedInstance = this._tryGetFromScopeCache<T>(token, scope);
+    const scopedInstance = this._tryGetFromScopeCache<T>(token, scope, stack);
     if (scopedInstance !== undefined) return scopedInstance;
 
     // Step 3: Try local resolution
@@ -1398,8 +1419,23 @@ export class Vault {
   private resolveLazyAttachments(): void {
     if (this.lazyImportsResolved) return;
 
+    const resolver = this.lazyResolver ?? Vault.getDefaultLazyResolver();
+    if (this.lazyImportClasses.length > 0 && resolver === undefined) {
+      throw new LazyFusionResolverMissingError();
+    }
+
+    const initialImportCount = this.importedModules.length;
     for (const cls of this.lazyImportClasses) {
-      this.importedModules.push(this.lazyResolver!(cls));
+      try {
+        const resolved = resolver!(cls);
+        if (!(resolved instanceof Vault)) {
+          throw new LazyResolverInvalidReturnError(cls.name || 'anonymous', resolved);
+        }
+        this.importedModules.push(resolved);
+      } catch (error) {
+        this.importedModules.length = initialImportCount;
+        throw error;
+      }
     }
 
     this._checkCircularAttachment(this.importedModules, [this.name], new Set([this]));
