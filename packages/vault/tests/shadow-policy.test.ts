@@ -1,12 +1,15 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 import { token } from '../src/core/token.js';
 import { Vault } from '../src/core/vault.js';
-import { Injectable } from '../src/decorators/index.js';
+import { Container } from '../src/api/container.js';
+import { Injectable, Module } from '../src/decorators/index.js';
 import { MultipleShadowPolicyViolationsError } from '../src/errors/errors.js';
 import { MetadataRegistry } from '../src/registry/metadata-registry.js';
 
 beforeEach(() => {
   MetadataRegistry.resetForTests();
+  Container.clearCache();
+  Vault.setDefaultLazyResolver(undefined);
 });
 
 describe('Shadow policy enforcement', () => {
@@ -72,5 +75,26 @@ describe('Shadow policy enforcement', () => {
           imports: [producer],
         })
     ).toThrow(MultipleShadowPolicyViolationsError);
+  });
+
+  it('throws for default shadowPolicy conflicts from lazy imports', () => {
+    const SharedToken = token('LazyShared');
+
+    @Injectable({ provide: SharedToken })
+    class SharedProvider {}
+
+    @Module({
+      providers: [SharedProvider],
+      exports: [SharedToken],
+    })
+    class SharedModule {}
+
+    @Module({
+      providers: [{ provide: SharedToken, useValue: 'local-shadow' }],
+      imports: [SharedModule],
+    })
+    class AppModule {}
+
+    expect(() => Container.from(AppModule)).toThrow(MultipleShadowPolicyViolationsError);
   });
 });

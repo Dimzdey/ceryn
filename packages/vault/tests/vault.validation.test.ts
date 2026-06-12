@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import { Vault } from '../src/core/vault.js';
+import { token } from '../src/core/token.js';
 import { InvalidModuleConfigError, MissingInjectableDecoratorError } from '../src/errors/errors.js';
 import { MetadataRegistry } from '../src/registry/metadata-registry.js';
 
@@ -21,8 +22,35 @@ describe('Vault configuration validation', () => {
     expect(() => new Vault({ providers: [badProvider] })).toThrow(InvalidModuleConfigError);
   });
 
+  it('rejects malformed provider shapes early', () => {
+    const T = token('MalformedProvider');
+
+    expect(
+      () =>
+        new Vault({
+          providers: [{ provide: T, useValue: 'value', useFactory: () => 'factory' } as never],
+        })
+    ).toThrow(InvalidModuleConfigError);
+
+    expect(() => new Vault({ providers: [{ useClass: class {} } as never] })).toThrow(
+      InvalidModuleConfigError
+    );
+
+    expect(() => new Vault({ providers: [{ provide: T } as never] })).toThrow(
+      InvalidModuleConfigError
+    );
+  });
+
   it('rejects reveal entries that are not tokens', () => {
     expect(() => new Vault({ exports: ['not-a-token' as never] })).toThrow(
+      InvalidModuleConfigError
+    );
+  });
+
+  it('rejects exported tokens that are neither local nor imported', () => {
+    const MissingT = token('MissingExport');
+
+    expect(() => new Vault({ providers: [], exports: [MissingT] })).toThrow(
       InvalidModuleConfigError
     );
   });

@@ -51,6 +51,11 @@ interface LegacyConfig {
 // ---------- Internal constants ----------
 const EMPTY_DEPS: readonly CanonicalId[] = Object.freeze([] as CanonicalId[]);
 
+function missingDepsForConstructor(ctor: Constructor): readonly (CanonicalId | undefined)[] {
+  if (ctor.length === 0) return EMPTY_DEPS;
+  return new Array<CanonicalId | undefined>(ctor.length).fill(undefined);
+}
+
 /**
  * Precomputed flag masks for hot-path optimization.
  * These eliminate repeated bitwise computations during resolution.
@@ -262,8 +267,12 @@ export class Vault {
       this._validateAndProcessReveal(reveal);
     }
 
+    if (this.lazyImportClasses.length > 0) this.resolveLazyAttachments();
+
     // Compute exposure indices if we have imported modules
     if (this.importedModules.length > 0) this.exposure.compute(this);
+
+    this._validateExportedTokens();
 
     // Enforce shadow policy after all registrations and exposure are indexed
     this._enforceShadowPolicy();
@@ -363,6 +372,26 @@ export class Vault {
       }
 
       this.exportedTokens.add(item.id);
+    }
+  }
+
+  /**
+   * Validate that every explicit export is backed by either a local provider or
+   * a visible imported provider. This permits intentional re-exports while
+   * rejecting dangling module contracts at bootstrap.
+   */
+  private _validateExportedTokens(): void {
+    for (const canonical of this.exportedTokens) {
+      if (this.store.has(canonical)) continue;
+      if (this.exposure.exportedMap.has(canonical) || this.exposure.globalMap.has(canonical)) {
+        continue;
+      }
+
+      throw new InvalidModuleConfigError(
+        `Module '${this.name}' exports '${this._formatTokenForDiagnostics(
+          canonical
+        )}' but no local or imported provider is visible for that token.`
+      );
     }
   }
   // ----- public API (surface used by consumers) -----
@@ -949,7 +978,7 @@ export class Vault {
     const lifecycleFlag = lifecycleToFlag(lifecycle);
     const metadata: ProviderMetadata = { name: canonical, label: token.label, lifecycle };
 
-    const deps = def ? def.dependencies : EMPTY_DEPS;
+    const deps = def ? def.dependencies : missingDepsForConstructor(provider.useClass);
     const hasNoDeps = deps.length === 0;
 
     const entry: Entry = {
@@ -1487,12 +1516,22 @@ export class Vault {
   // ----- utilities -----
 
   private _isProvider(value: unknown): value is Provider {
-    return (
-      typeof value === 'object' &&
-      value !== null &&
-      'provide' in value &&
-      ('useClass' in value || 'useValue' in value || 'useFactory' in value)
-    );
+    if (typeof value !== 'object' || value === null || !('provide' in value)) return false;
+
+    const candidate = value as Partial<ClassProvider & ValueProvider & FactoryProvider>;
+    if (!isToken(candidate.provide)) return false;
+
+    const implementationKeys = [
+      'useClass' in candidate,
+      'useValue' in candidate,
+      'useFactory' in candidate,
+    ].filter(Boolean).length;
+    if (implementationKeys !== 1) return false;
+
+    if ('useClass' in candidate && typeof candidate.useClass !== 'function') return false;
+    if ('useFactory' in candidate && typeof candidate.useFactory !== 'function') return false;
+
+    return true;
   }
 
   /**

@@ -391,14 +391,14 @@ Ceryn Vault is designed for performance-critical applications.
 
 Compared against popular TypeScript DI containers on a realistic workload (6 endpoints, 3-layer dependency graph, singleton resolution):
 
-| Scenario | Ceryn | Inversify | Tsyringe | TypeDI | Needle |
-|----------|-------|-----------|----------|--------|--------|
-| **Cold boot** | **0.24 ms** | 61 ms | 88 ms | 14 ms | 14 ms |
-| **Warm 1k requests** | **129 ms** | 217 ms | 301 ms | 301 ms | 290 ms |
-| **Burst 10k** | **1.09 s** | 1.85 s | 2.55 s | 2.56 s | 2.52 s |
-| **Cross-module resolve 5k** | **81 ms** | 540 ms | 679 ms | 98 ms | 149 ms |
-| **Scoped lifecycle 1k** | **494 ms** | — | 1.01 s | — | — |
-| **Async factory 100** | **24 ms** | — | — | — | — |
+| Scenario                    | Ceryn       | Inversify | Tsyringe | TypeDI | Needle |
+| --------------------------- | ----------- | --------- | -------- | ------ | ------ |
+| **Cold boot**               | **0.24 ms** | 61 ms     | 88 ms    | 14 ms  | 14 ms  |
+| **Warm 1k requests**        | **129 ms**  | 217 ms    | 301 ms   | 301 ms | 290 ms |
+| **Burst 10k**               | **1.09 s**  | 1.85 s    | 2.55 s   | 2.56 s | 2.52 s |
+| **Cross-module resolve 5k** | **81 ms**   | 540 ms    | 679 ms   | 98 ms  | 149 ms |
+| **Scoped lifecycle 1k**     | **494 ms**  | —         | 1.01 s   | —      | —      |
+| **Async factory 100**       | **24 ms**   | —         | —        | —      | —      |
 
 > **Cold boot is 57–560x faster** than alternatives. Warm-state resolution is 1.7–2.3x faster. Measured on Node v22, median values.
 
@@ -506,10 +506,13 @@ Ceryn Vault provides detailed error messages for common issues:
 
 ```typescript
 import {
+  AggregateDisposalError,
   CircularDependencyError,
-  ProviderNotFoundError,
-  ProviderNotExposedError,
+  LazyFusionResolverMissingError,
+  LifecycleViolationError,
   MissingInjectDecoratorError,
+  ProviderNotFoundError,
+  ScopedWithoutScopeError,
 } from '@ceryn/vault';
 
 try {
@@ -521,6 +524,130 @@ try {
     console.error('Circular dependency detected');
   }
 }
+```
+
+### Diagnostic Error Examples
+
+Ceryn errors are designed to be read directly. In development, messages include
+the dependency chain, nearby context, why the configuration is invalid, and the
+usual fixes. In production (`NODE_ENV=production`), messages are shortened while
+the error class and structured properties remain available.
+
+#### Missing provider
+
+If `UserService` depends on `CacheT`, but no provider is registered for that
+token, the error points at both the missing token and the provider that asked
+for it:
+
+```bash
+Cannot resolve provider 'Cache [tok_2]'.
+
+Dependency chain:
+  UserService [tok_1] -> Cache [tok_2]
+
+Available providers:
+  - UserService [tok_1]
+  - Logger [tok_3]
+
+To fix this:
+  1. Add @Injectable() decorator to Cache [tok_2]
+  2. Include it in the 'providers' array when constructing the module
+  3. Check for typos in @Inject('Cache [tok_2]') or provider tokens
+```
+
+#### Missing injection decorator
+
+Because Vault does not use reflection, every constructor parameter must declare
+its token explicitly. The error names the class and parameter index, then shows
+the expected pattern:
+
+```bash
+Missing @Inject decorator
+
+Parameter 0 of UserService is missing a @Inject decorator.
+
+Fix:
+  - Add @Inject(SomeService) to the constructor parameter at index 0
+
+Example:
+  @Injectable()
+  class UserService {
+    constructor(
+      @Inject(SomeService) private service: SomeService
+    ) {}
+  }
+```
+
+#### Lifecycle violation
+
+Lifecycle errors explain the rule, the dependency chain, and the consequence of
+ignoring it:
+
+```bash
+Lifecycle violation: singleton provider 'UserService [tok_1]'
+cannot depend on scoped provider 'RequestContext [tok_2]'.
+
+Dependency chain:
+  UserService [tok_1] -> RequestContext [tok_2]
+
+Why this is an error:
+
+  Singleton providers live for the entire application lifetime.
+  Scoped providers are isolated per scope (e.g., per HTTP request).
+  If a singleton depends on a scoped provider, it would capture the
+  first scope's instance, defeating the purpose of scoping.
+
+To fix this:
+  1. Change 'UserService [tok_1]' to scoped lifecycle
+  2. Change 'RequestContext [tok_2]' to singleton lifecycle
+  3. Restructure your dependencies to follow lifecycle rules
+```
+
+#### Scoped provider without a scope
+
+Resolving a scoped provider from the root container tells you exactly how to
+create and pass a scope:
+
+```bash
+Cannot resolve scoped provider 'RequestContext [tok_2]' without a scope.
+
+Provider 'RequestContext [tok_2]' is registered with Lifecycle.Scoped but no
+scope was provided.
+
+To fix this:
+  1. Pass a scope when resolving:
+     const scope = container.createScope();
+     const instance = scope.resolve(Token);
+     await scope.dispose();
+
+  2. Or change the lifecycle to Singleton or Transient if scoping is not needed.
+```
+
+#### Lazy import resolver missing
+
+If you construct `CoreVault` directly with module classes in `imports`, the
+message points you back to the higher-level bootstrap API:
+
+```bash
+Lazy import resolver missing
+
+Lazy import resolver is unavailable. Import 'Container' before constructing
+modules that import classes.
+```
+
+#### Disposal errors
+
+When several resources fail during shutdown, Vault aggregates them instead of
+dropping later failures:
+
+```bash
+Multiple disposal errors occurred
+
+2 error(s) occurred during container disposal:
+  1. database connection already closed
+  2. cache flush timed out
+
+Check the `errors` property for detailed information about each failure.
 ```
 
 ## Testing

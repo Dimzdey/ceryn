@@ -320,7 +320,7 @@ export class MetadataRegistry {
    * @returns Immutable StaticProviderDefinition
    */
   private static buildDef(ctor: Constructor, rec: MutableProviderRecord): StaticProviderDefinition {
-    const deps = rec.deps ?? (rec.deps = this.computeDeps(rec));
+    const deps = rec.deps ?? (rec.deps = this.computeDeps(ctor, rec));
     const def: StaticProviderDefinition = {
       ctor,
       metadata: rec.metadata,
@@ -377,11 +377,15 @@ export class MetadataRegistry {
    * @param rec - MutableProviderRecord with parameter mappings
    * @returns Readonly array of dependencies (not frozen for performance)
    */
-  private static computeDeps(rec: MutableProviderRecord): readonly (CanonicalId | undefined)[] {
-    if (rec.links.size === 0) return EMPTY_LINKS;
-    let max = -1;
+  private static computeDeps(
+    ctor: Constructor,
+    rec: MutableProviderRecord
+  ): readonly (CanonicalId | undefined)[] {
+    let max = ctor.length - 1;
     for (const i of rec.links.keys()) if (i > max) max = i;
+    if (max < 0) return EMPTY_LINKS;
     const deps = new Array<CanonicalId | undefined>(max + 1);
+    deps.fill(undefined);
     for (const [i, token] of rec.links) deps[i] = token;
     return deps; // no freeze (performance)
   }
