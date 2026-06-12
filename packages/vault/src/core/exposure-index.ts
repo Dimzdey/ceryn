@@ -1,6 +1,8 @@
 import type { CanonicalId } from './token.js';
 import type { Vault } from './vault.js';
 
+type ExposureRef = { vault: Vault; canonical: CanonicalId };
+
 /**
  * Cross-module exposure index.
  *
@@ -24,13 +26,16 @@ export class ExposureIndex {
    * Global exposure map: token -> vault/canonical reference.
    * Contains transitively exposed tokens from global modules.
    */
-  private readonly global = new Map<string, { vault: Vault; canonical: CanonicalId }>();
+  private readonly global = new Map<string, ExposureRef>();
 
   /**
    * Explicit export map: token -> vault/canonical reference.
    * Contains explicitly exported tokens from non-global modules.
    */
-  private readonly exported = new Map<string, { vault: Vault; canonical: CanonicalId }>();
+  private readonly exported = new Map<string, ExposureRef>();
+
+  /** Duplicate visible imported providers discovered during indexing. */
+  private readonly duplicates = new Map<CanonicalId, Map<string, Vault>>();
 
   /** Computation complete flag (prevents redundant indexing) */
   private computed = false;
@@ -54,7 +59,7 @@ export class ExposureIndex {
    * Public accessor for global exposure map.
    * Used by resolution logic to find transitively exposed tokens.
    */
-  get globalMap() {
+  get globalMap(): ReadonlyMap<string, ExposureRef> {
     return this.global;
   }
 
@@ -67,8 +72,19 @@ export class ExposureIndex {
    * Public accessor for explicit export map.
    * Used by resolution logic to find explicitly exported tokens.
    */
-  get exportedMap() {
+  get exportedMap(): ReadonlyMap<string, ExposureRef> {
     return this.exported;
+  }
+
+  get duplicateMap(): ReadonlyMap<CanonicalId, ReadonlyMap<string, Vault>> {
+    return this.duplicates;
+  }
+
+  getDuplicateExposures(): Array<{ canonical: CanonicalId; producerNames: string[] }> {
+    return Array.from(this.duplicates, ([canonical, producers]) => ({
+      canonical,
+      producerNames: Array.from(producers.keys()),
+    }));
   }
 
   /** @deprecated Use exportedMap instead */
@@ -138,6 +154,7 @@ export class ExposureIndex {
   clear() {
     this.global.clear();
     this.exported.clear();
+    this.duplicates.clear();
     this.computed = false;
     this.pairCache = new WeakMap();
     this.visited = new WeakSet();
@@ -164,13 +181,31 @@ export class ExposureIndex {
       const ref = { vault, canonical } as const;
 
       // Add canonical and all aliases to target map (first-wins semantics)
-      if (!target.has(canonical)) {
+      const existing = target.get(canonical);
+      if (existing) {
+        this.recordDuplicate(canonical, existing, ref);
+      } else {
         target.set(canonical, ref);
         for (const alias of entry.aliases) {
-          if (!target.has(alias)) target.set(alias, ref);
+          const existingAlias = target.get(alias);
+          if (existingAlias) this.recordDuplicate(canonical, existingAlias, ref);
+          else target.set(alias, ref);
         }
       }
     }
+  }
+
+  private recordDuplicate(token: CanonicalId, first: ExposureRef, second: ExposureRef): void {
+    if (first.vault === second.vault && first.canonical === second.canonical) return;
+
+    let producers = this.duplicates.get(token);
+    if (!producers) {
+      producers = new Map<string, Vault>();
+      this.duplicates.set(token, producers);
+    }
+
+    producers.set(first.vault.getName(), first.vault);
+    producers.set(second.vault.getName(), second.vault);
   }
 
   /**

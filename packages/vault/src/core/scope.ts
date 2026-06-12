@@ -68,10 +68,10 @@
  *  - Local registrations map lazily allocated on first provide() call
  */
 
-import { ScopeDisposedError } from '../errors/errors.js';
+import { AggregateDisposalError, ScopeDisposedError } from '../errors/errors.js';
 import type { Disposable } from '../types/index.js';
 import type { Entry } from './entry-store.js';
-import { FLAG_HAS_INSTANCE } from './flags.js';
+import { FLAG_HAS_INSTANCE, FLAG_OWNS_INSTANCE, LIFECYCLE_SCOPED } from './flags.js';
 import { SingletonCache } from './singleton-cache.js';
 import type { CanonicalId, Token } from './token.js';
 import type { Vault } from './vault.js';
@@ -80,6 +80,15 @@ import type { Vault } from './vault.js';
 const EMPTY_DEPS: readonly CanonicalId[] = Object.freeze([] as CanonicalId[]);
 const EMPTY_ALIASES: readonly string[] = Object.freeze([] as string[]);
 const EMPTY_SUMMONS: readonly (CanonicalId | undefined)[] = Object.freeze([]);
+
+export interface ScopeProvideOptions {
+  /**
+   * Whether this scope owns the value and should dispose it when the scope ends.
+   * Defaults to false because scope-provided values are commonly request objects
+   * or test doubles owned by caller code.
+   */
+  owned?: boolean;
+}
 
 export class Scope {
   /**
@@ -179,11 +188,7 @@ export class Scope {
    * Provide a value for a token in this scope.
    *
    * This registers a scope-local value that overrides any vault registration
-   * for the given token. The value is only available within this scope and
-   * will be disposed when the scope is disposed.
-   *
-   * If the provided value implements dispose() or close(), it will be
-   * automatically registered for cleanup.
+   * for the given token. The value is only available within this scope.
    *
    * @param token - Token to register the value for
    * @param value - Instance to provide
@@ -197,14 +202,18 @@ export class Scope {
    * scope.provide(ConnectionT, dbConnection);
    * ```
    */
-  provide<T>(token: Token<T>, value: T, isOverride = false): void {
+  provide<T>(token: Token<T>, value: T, options: ScopeProvideOptions = {}): void {
+    this.setLocalValue(token, value, false, options.owned === true);
+  }
+
+  private setLocalValue<T>(token: Token<T>, value: T, isOverride: boolean, owned: boolean): void {
     if (this.disposed) throw new ScopeDisposedError();
 
     // If this is an override, remove the old disposer first
     if (isOverride && this.tokenDisposers?.has(token.id)) {
-      const oldDisposer = this.tokenDisposers.get(token.id)!;
+      const oldDisposer = this.tokenDisposers.get(token.id);
       if (this.disposers) {
-        const idx = this.disposers.indexOf(oldDisposer);
+        const idx = oldDisposer ? this.disposers.indexOf(oldDisposer) : -1;
         if (idx !== -1) this.disposers.splice(idx, 1);
       }
       this.tokenDisposers.delete(token.id);
@@ -223,21 +232,19 @@ export class Scope {
       factory: undefined,
       factoryDeps: EMPTY_DEPS,
       metadata: {
-        lifecycle: 'transient',
+        lifecycle: 'scoped',
         name: token.id,
         label: token.label,
       },
       summons: EMPTY_SUMMONS,
       aliases: EMPTY_ALIASES,
       instance: value,
-      flags: FLAG_HAS_INSTANCE,
+      flags: LIFECYCLE_SCOPED | FLAG_HAS_INSTANCE | (owned ? FLAG_OWNS_INSTANCE : 0),
     };
 
     this.localRegistrations.set(token.id, entry);
 
-    // Auto-register cleanup only for objects/functions that have dispose/close
-    // Skip primitives (string, number, boolean) entirely — they never have disposers
-    if (value !== null && value !== undefined && typeof value === 'object') {
+    if (owned && value !== null && value !== undefined && typeof value === 'object') {
       const disposeFn =
         (value as unknown as Disposable).dispose ?? (value as unknown as Disposable).close;
       if (typeof disposeFn === 'function') {
@@ -342,9 +349,8 @@ export class Scope {
    * scope.override(DatabaseT, mockDatabase);
    * ```
    */
-  override<T>(token: Token<T>, value: T): void {
-    // Pass isOverride flag to trigger old disposer removal
-    this.provide(token, value, true);
+  override<T>(token: Token<T>, value: T, options: ScopeProvideOptions = {}): void {
+    this.setLocalValue(token, value, true, options.owned === true);
   }
 
   /**
@@ -427,11 +433,19 @@ export class Scope {
       return;
     }
 
+    const errors: Error[] = [];
     for (let i = this.disposers.length - 1; i >= 0; i--) {
-      void this.disposers[i]();
+      try {
+        void this.disposers[i]();
+      } catch (error) {
+        errors.push(error instanceof Error ? error : new Error(String(error)));
+      }
     }
     if (this._cache) this._cache.clear();
     this.disposers = undefined;
+    this.tokenDisposers = undefined;
+
+    if (errors.length > 0) throw new AggregateDisposalError(errors);
   }
 
   /**
@@ -454,12 +468,20 @@ export class Scope {
       return;
     }
 
+    const errors: Error[] = [];
     for (let i = this.disposers.length - 1; i >= 0; i--) {
-      const res = this.disposers[i]();
-      // Check if result is a Promise using duck typing (avoids instanceof check)
-      if (res && typeof (res as Promise<unknown>).then === 'function') await res;
+      try {
+        const res = this.disposers[i]();
+        // Check if result is a Promise using duck typing (avoids instanceof check)
+        if (res && typeof (res as Promise<unknown>).then === 'function') await res;
+      } catch (error) {
+        errors.push(error instanceof Error ? error : new Error(String(error)));
+      }
     }
     if (this._cache) this._cache.clear();
     this.disposers = undefined;
+    this.tokenDisposers = undefined;
+
+    if (errors.length > 0) throw new AggregateDisposalError(errors);
   }
 }

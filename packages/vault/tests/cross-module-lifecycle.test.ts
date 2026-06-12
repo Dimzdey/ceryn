@@ -68,7 +68,7 @@ describe('Cross-module lifecycle validation', () => {
     expect(() => root.resolve(SingletonToken)).toThrow(LifecycleViolationError);
   });
 
-  it('allows a scoped resolution to supply runtime scope-local values to a singleton', () => {
+  it('rejects a singleton that depends on a scope-local value', () => {
     const DatabaseToken = token('ScopeLocalDatabase');
     const SingletonToken = token('SingletonWithRuntimeScopeLocalDep');
     const database = { url: 'scope://db' };
@@ -86,6 +86,27 @@ describe('Cross-module lifecycle validation', () => {
     const scope = root.createScope();
     scope.provide(DatabaseToken, database);
 
-    expect(scope.resolve(SingletonToken)).toEqual({ dep: database });
+    expect(() => scope.resolve(SingletonToken)).toThrow(LifecycleViolationError);
+  });
+
+  it('allows a scoped provider to depend on a scope-local value', () => {
+    const DatabaseToken = token('ScopeLocalDatabaseForScopedConsumer');
+    const ScopedToken = token('ScopedWithRuntimeScopeLocalDep');
+    const database = { url: 'scope://db' };
+
+    const root = new Vault({
+      providers: [
+        {
+          provide: ScopedToken,
+          lifecycle: Lifecycle.Scoped,
+          deps: [DatabaseToken],
+          useFactory: (dep) => ({ dep }),
+        },
+      ],
+    });
+    const scope = root.createScope();
+    scope.provide(DatabaseToken, database);
+
+    expect(scope.resolve(ScopedToken)).toEqual({ dep: database });
   });
 });

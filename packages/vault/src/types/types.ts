@@ -170,6 +170,11 @@ export interface ClassProvider {
 export interface ValueProvider {
   provide: InjectionToken;
   useValue: unknown;
+  /**
+   * Whether the container owns this external value and should dispose it.
+   * Defaults to false because useValue instances are usually owned by caller code.
+   */
+  owned?: boolean;
 }
 export type FactoryCtx = { signal?: AbortSignal };
 /**
@@ -189,6 +194,11 @@ export type FactoryProvider<T = unknown> = {
   useFactory: (...deps: unknown[]) => T | Promise<T> | ((ctx: FactoryCtx) => Promise<T>);
   deps?: Array<InjectionToken | CanonicalId>;
   lifecycle?: Lifecycle; // Singleton | Transient | Scoped (if you add scopes later)
+  /**
+   * Whether the container owns factory-created instances and should dispose them.
+   * Defaults to true.
+   */
+  owned?: boolean;
 };
 
 export type ShadowPolicy = 'error' | 'allow' | 'warn';

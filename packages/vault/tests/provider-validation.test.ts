@@ -6,6 +6,7 @@ import { Vault } from '../src/core/vault.js';
 import { Module as ModuleDecorator } from '../src/decorators/index.js';
 import { InvalidModuleConfigError } from '../src/errors/errors.js';
 import { MetadataRegistry } from '../src/registry/metadata-registry.js';
+import { Lifecycle } from '../src/types/types.js';
 
 beforeEach(() => {
   MetadataRegistry.resetForTests();
@@ -56,6 +57,7 @@ describe('Provider validation', () => {
       providers: [
         {
           provide: FactoryToken,
+          lifecycle: Lifecycle.Scoped,
           useFactory: (dep: typeof override) => ({ dep }),
           deps: [HiddenToken],
         },
@@ -87,6 +89,7 @@ describe('Provider validation', () => {
       providers: [
         {
           provide: FactoryToken,
+          lifecycle: Lifecycle.Scoped,
           useFactory: (dep: typeof override) => ({ dep }),
           deps: [HiddenToken],
         },
@@ -132,6 +135,7 @@ describe('Provider validation', () => {
       providers: [
         {
           provide: FactoryToken,
+          lifecycle: Lifecycle.Scoped,
           useFactory: (dep: typeof database) => ({ dep }),
           deps: [DependencyToken],
         },

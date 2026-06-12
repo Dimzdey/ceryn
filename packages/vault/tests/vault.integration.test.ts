@@ -2,7 +2,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { token } from '../src/core/token.js';
 import { Vault } from '../src/core/vault.js';
-import { Injectable, Inject } from '../src/decorators/index.js';
+import { Inject, Injectable } from '../src/decorators/index.js';
 import {
   AggregateDisposalError,
   CircularModuleAttachmentError,
@@ -231,14 +231,16 @@ describe('Vault integration', () => {
 
     const vault = new Vault({
       providers: [
-        { provide: DisposableToken, useValue: { dispose: throwingDispose } },
-        { provide: AsyncDisposableToken, useValue: { dispose: asyncDispose } },
+        { provide: DisposableToken, useValue: { dispose: throwingDispose }, owned: true },
+        { provide: AsyncDisposableToken, useFactory: () => ({ dispose: asyncDispose }) },
       ],
     });
 
     // Access value to ensure cache prime path runs
     const disposableInstance = vault.resolve(DisposableToken);
     expect(disposableInstance).toHaveProperty('dispose', throwingDispose);
+    const asyncDisposableInstance = vault.resolve(AsyncDisposableToken);
+    expect(asyncDisposableInstance).toHaveProperty('dispose', asyncDispose);
 
     await expect(vault.dispose()).rejects.toThrow(AggregateDisposalError);
     expect(throwingDispose).toHaveBeenCalledTimes(1);
@@ -246,6 +248,40 @@ describe('Vault integration', () => {
 
     // Subsequent dispose is a no-op
     expect(vault.dispose()).toBeUndefined();
+  });
+
+  it('does not dispose unowned useValue providers by default', () => {
+    const ExternalToken = token('ExternalValue');
+    const dispose = vi.fn();
+    const external = { dispose };
+
+    const vault = new Vault({
+      providers: [{ provide: ExternalToken, useValue: external }],
+    });
+
+    expect(vault.resolve(ExternalToken)).toBe(external);
+    vault.dispose();
+
+    expect(dispose).not.toHaveBeenCalled();
+  });
+
+  it('disposes owned singleton instances in LIFO creation order', () => {
+    const FirstToken = token('FirstDisposableSingleton');
+    const SecondToken = token('SecondDisposableSingleton');
+    const order: string[] = [];
+
+    const vault = new Vault({
+      providers: [
+        { provide: FirstToken, useFactory: () => ({ dispose: () => order.push('first') }) },
+        { provide: SecondToken, useFactory: () => ({ dispose: () => order.push('second') }) },
+      ],
+    });
+
+    vault.resolve(FirstToken);
+    vault.resolve(SecondToken);
+    vault.dispose();
+
+    expect(order).toEqual(['second', 'first']);
   });
 
   it('validates lifecycle dependencies eagerly', () => {

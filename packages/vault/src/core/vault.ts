@@ -5,9 +5,10 @@ import {
   AggregateDisposalError,
   CircularDependencyError,
   CircularModuleAttachmentError,
+  ContainerDisposedError,
+  InvalidModuleConfigError,
   InvalidProviderError,
   InvalidTokenError,
-  InvalidModuleConfigError,
   LazyFusionResolverMissingError,
   LazyResolverInvalidReturnError,
   LifecycleViolationError,
@@ -15,9 +16,8 @@ import {
   MissingInjectableDecoratorError,
   MultipleShadowPolicyViolationsError,
   ProviderNotFoundError,
-  TokenCollisionError,
   ScopedWithoutScopeError,
-  ContainerDisposedError,
+  TokenCollisionError,
 } from '../errors/index.js';
 import { MetadataRegistry } from '../registry/index.js';
 import type { Disposable, ShadowPolicy } from '../types/index.js';
@@ -28,11 +28,11 @@ import {
   type Constructor,
   type DecoratedModuleClass,
   type FactoryProvider,
+  type ModuleConfig,
   type Provider,
   type ProviderMetadata,
   type StaticProviderDefinition,
   type ValueProvider,
-  type ModuleConfig,
 } from '../types/index.js';
 import { Activator } from './activator.js';
 import type { Entry } from './entry-store.js';
@@ -41,14 +41,15 @@ import { ExposureIndex } from './exposure-index.js';
 import {
   FLAG_HAS_INSTANCE,
   FLAG_HAS_NO_DEPS,
+  FLAG_OWNS_INSTANCE,
   LIFECYCLE_MASK,
   LIFECYCLE_SCOPED,
   LIFECYCLE_SINGLETON,
 } from './flags.js';
-import { SingletonCache } from './singleton-cache.js';
 import { ResolverAsync } from './resolver-async.js';
 import { ResolverSync } from './resolver-sync.js';
 import { Scope } from './scope.js';
+import { SingletonCache } from './singleton-cache.js';
 import { isToken, type CanonicalId, type Token } from './token.js';
 interface LegacyConfig {
   __moduleCfg__: ModuleConfig;
@@ -141,6 +142,8 @@ export class Vault {
   private readonly _sourceClass?: Constructor;
 
   private disposed = false;
+  private readonly disposalOrder: CanonicalId[] = [];
+  private readonly disposalTracked = new Set<CanonicalId>();
   private shadowIncomingCache: Map<CanonicalId, string[]> | null = null;
   private shadowIncomingStamp = -1;
 
@@ -353,7 +356,9 @@ export class Vault {
       } catch (error) {
         if (error instanceof TokenCollisionError) {
           throw new InvalidModuleConfigError(
-            `providers[${i}] duplicates token '${this._formatTokenForDiagnostics(error.token)}'`
+            `providers[${i}] duplicates token '${this._formatTokenForDiagnostics(
+              error.token as CanonicalId
+            )}'`
           );
         }
         throw error;
@@ -729,7 +734,10 @@ export class Vault {
     scope?: Scope
   ): void {
     const scopeEntry = scope?.getLocalEntry(canonical);
-    if (scopeEntry && scopeEntry.flags & FLAG_HAS_INSTANCE) return;
+    if (scopeEntry && scopeEntry.flags & FLAG_HAS_INSTANCE) {
+      this._validateLifecycleRulesForEntry(canonical, scopeEntry, stack);
+      return;
+    }
 
     const localEntry = this.store.getByCanonical(canonical);
     if (localEntry) {
@@ -787,6 +795,15 @@ export class Vault {
     }
   }
 
+  /** @internal Track owned materialized singletons for LIFO disposal. */
+  _trackOwnedInstance(entry: Entry): void {
+    if (!(entry.flags & FLAG_OWNS_INSTANCE) || !(entry.flags & FLAG_HAS_INSTANCE)) return;
+    if (this.disposalTracked.has(entry.token)) return;
+
+    this.disposalTracked.add(entry.token);
+    this.disposalOrder.push(entry.token);
+  }
+
   /**
    * Clear cached instances and promises WITHOUT disposing them.
    *
@@ -817,7 +834,8 @@ export class Vault {
    */
   clear(): void {
     for (const canonical of this.store.canonicalKeys()) {
-      const e = this.store.getByCanonical(canonical)!;
+      const e = this.store.getByCanonical(canonical);
+      if (!e) continue;
       if (e.instance !== undefined) {
         e.instance = undefined;
         e.flags &= ~FLAG_HAS_INSTANCE;
@@ -825,6 +843,8 @@ export class Vault {
       if (e.promise) e.promise = undefined;
     }
     this.cache.clear();
+    this.disposalOrder.length = 0;
+    this.disposalTracked.clear();
   }
 
   /**
@@ -848,10 +868,32 @@ export class Vault {
 
     const errors: Error[] = [];
     const pending: Promise<void>[] = [];
+    const allCanonicals = Array.from(this.store.canonicalKeys());
+    const seen = new Set<CanonicalId>();
+    const disposalCandidates: CanonicalId[] = [];
 
-    // Attempt to dispose all instances, collecting errors along the way
-    for (const canonical of this.store.canonicalKeys()) {
-      const entry = this.store.getByCanonical(canonical)!;
+    for (let i = this.disposalOrder.length - 1; i >= 0; i--) {
+      const canonical = this.disposalOrder[i];
+      if (!seen.has(canonical)) {
+        seen.add(canonical);
+        disposalCandidates.push(canonical);
+      }
+    }
+
+    for (let i = allCanonicals.length - 1; i >= 0; i--) {
+      const canonical = allCanonicals[i];
+      if (!seen.has(canonical)) {
+        seen.add(canonical);
+        disposalCandidates.push(canonical);
+      }
+    }
+
+    // Attempt to dispose owned instances, collecting errors along the way
+    for (const canonical of disposalCandidates) {
+      const entry = this.store.getByCanonical(canonical);
+      if (!entry) continue;
+      if (!(entry.flags & FLAG_OWNS_INSTANCE)) continue;
+
       const instance = entry.instance as Disposable | undefined;
       if (instance === undefined) continue;
 
@@ -878,7 +920,11 @@ export class Vault {
           errors.push(error instanceof Error ? error : new Error(String(error)));
         }
       }
+    }
 
+    for (const canonical of allCanonicals) {
+      const entry = this.store.getByCanonical(canonical);
+      if (!entry) continue;
       entry.instance = undefined;
       entry.promise = undefined;
       entry.flags &= ~FLAG_HAS_INSTANCE;
@@ -888,6 +934,8 @@ export class Vault {
     this.cache.clear();
     this.exposure.clear();
     this._invalidateShadowCache();
+    this.disposalOrder.length = 0;
+    this.disposalTracked.clear();
 
     // Synchronous disposal path
     if (pending.length === 0) {
@@ -961,7 +1009,8 @@ export class Vault {
   getSingletons(): Map<CanonicalId, unknown> {
     const out = new Map<CanonicalId, unknown>();
     for (const k of this.store.canonicalKeys()) {
-      const e = this.store.getByCanonical(k)!;
+      const e = this.store.getByCanonical(k);
+      if (!e) continue;
       if (e.metadata.lifecycle === Lifecycle.Singleton && e.instance !== undefined)
         out.set(k, e.instance);
     }
@@ -1079,7 +1128,7 @@ export class Vault {
       summons: def.dependencies,
       aliases: [canonical],
       // Compose flags: lifecycle bits (0-1) + optimization flags (2+)
-      flags: lifecycleFlag | (hasNoDeps ? FLAG_HAS_NO_DEPS : 0),
+      flags: lifecycleFlag | FLAG_OWNS_INSTANCE | (hasNoDeps ? FLAG_HAS_NO_DEPS : 0),
     };
 
     this.store.add(entry, this.name);
@@ -1123,7 +1172,7 @@ export class Vault {
       summons: deps,
       aliases: [canonical],
       // Compose flags: lifecycle bits (0-1) + optimization flags (2+)
-      flags: lifecycleFlag | (hasNoDeps ? FLAG_HAS_NO_DEPS : 0),
+      flags: lifecycleFlag | FLAG_OWNS_INSTANCE | (hasNoDeps ? FLAG_HAS_NO_DEPS : 0),
     };
 
     this.store.add(entry, this.name);
@@ -1165,10 +1214,15 @@ export class Vault {
       aliases: [canonical],
       instance: provider.useValue,
       // Flags: singleton (0b00) + has instance + no summons
-      flags: LIFECYCLE_SINGLETON | FLAG_HAS_INSTANCE | FLAG_HAS_NO_DEPS,
+      flags:
+        LIFECYCLE_SINGLETON |
+        FLAG_HAS_INSTANCE |
+        FLAG_HAS_NO_DEPS |
+        (provider.owned === true ? FLAG_OWNS_INSTANCE : 0),
     };
 
     this.store.add(entry, this.name);
+    this._trackOwnedInstance(entry);
   }
 
   /**
@@ -1211,7 +1265,7 @@ export class Vault {
       summons: EMPTY_DEPS, // Not used for factories (factoryDeps used instead)
       aliases: [canonical],
       // Flags: lifecycle bits (0-1) + FLAG_HAS_NO_DEPS (factories don't use summons[])
-      flags: lifecycleFlag | FLAG_HAS_NO_DEPS,
+      flags: lifecycleFlag | FLAG_HAS_NO_DEPS | (provider.owned === false ? 0 : FLAG_OWNS_INSTANCE),
     };
     this.store.add(entry, this.name);
 
@@ -1281,7 +1335,8 @@ export class Vault {
     const hit = this._findCrossVaultEntry(token);
     if (!hit) return;
     const { vault, canonical } = hit;
-    const e = vault.store.getByCanonical(canonical)!;
+    const e = vault.store.getByCanonical(canonical);
+    if (!e) throw this.buildNotFoundError(token, stack);
     const lifecycleFlags = e.flags & LIFECYCLE_MASK;
     this._validateLifecycleRulesForEntry(token, e, stack);
     if (lifecycleFlags === LIFECYCLE_SINGLETON && e.flags & FLAG_HAS_INSTANCE) {
@@ -1305,7 +1360,8 @@ export class Vault {
     const hit = this._findCrossVaultEntry(token);
     if (!hit) return;
     const { vault, canonical } = hit;
-    const e = vault.store.getByCanonical(canonical)!;
+    const e = vault.store.getByCanonical(canonical);
+    if (!e) throw this.buildNotFoundError(token, stack);
     const lifecycleFlags = e.flags & LIFECYCLE_MASK;
     this._validateLifecycleRulesForEntry(token, e, stack);
     if (lifecycleFlags === LIFECYCLE_SINGLETON && e.flags & FLAG_HAS_INSTANCE) {
@@ -1414,6 +1470,7 @@ export class Vault {
     // Check scope-local registrations first (highest priority)
     const localEntry = scope.getLocalEntry(token);
     if (localEntry && localEntry.flags & FLAG_HAS_INSTANCE) {
+      if (stack !== undefined) this._validateLifecycleRulesForEntry(token, localEntry, stack);
       return localEntry.instance as T;
     }
 
@@ -1589,7 +1646,8 @@ export class Vault {
     const initialImportCount = this.importedModules.length;
     for (const cls of this.lazyImportClasses) {
       try {
-        const resolved = resolver!(cls);
+        if (!resolver) throw new LazyFusionResolverMissingError();
+        const resolved = resolver(cls);
         if (!(resolved instanceof Vault)) {
           throw new LazyResolverInvalidReturnError(cls.name || 'anonymous', resolved);
         }
@@ -1696,22 +1754,74 @@ export class Vault {
     if (this.shadowPolicy === 'allow') return;
 
     const violations = this._collectShadowViolations();
+    const ambiguousImports = this._collectAmbiguousImportViolations();
 
-    if (violations.length === 0) return;
+    if (violations.length === 0 && ambiguousImports.length === 0) return;
 
     // Warn mode: Log all violations but don't throw
     if (this.shadowPolicy === 'warn') {
-      console.warn(`[Ceryn] Shadow policy violations detected in vault '${this.name}':`);
-      for (const v of violations) {
-        console.warn(
-          `  - Token '${v.token}' (${v.lifecycle}) shadowed by: ${v.producers.join(', ')}`
-        );
+      if (violations.length > 0) {
+        console.warn(`[Ceryn] Shadow policy violations detected in vault '${this.name}':`);
+        for (const v of violations) {
+          console.warn(
+            `  - Token '${v.token}' (${v.lifecycle}) shadowed by: ${v.producers.join(', ')}`
+          );
+        }
+      }
+      if (ambiguousImports.length > 0) {
+        console.warn(`[Ceryn] Ambiguous imported providers detected in vault '${this.name}':`);
+        for (const v of ambiguousImports) {
+          console.warn(`  - Token '${v.token}' exposed by: ${v.producers.join(', ')}`);
+        }
       }
       return;
     }
 
-    // Error mode (default): Throw with all violations
-    throw new MultipleShadowPolicyViolationsError(this.name, violations);
+    if (violations.length > 0) {
+      throw new MultipleShadowPolicyViolationsError(this.name, violations);
+    }
+
+    throw new InvalidModuleConfigError(this._formatAmbiguousImportViolations(ambiguousImports));
+  }
+
+  private _formatAmbiguousImportViolations(
+    violations: Array<{ token: string; producers: string[] }>
+  ): string {
+    const list = violations
+      .map((v) => `'${v.token}' is exposed by ${v.producers.join(', ')}`)
+      .join('; ');
+
+    return `Module '${this.name}' has ambiguous imported providers: ${list}. Set shadowPolicy: 'allow' to keep first-match resolution, or import/export only one provider for each token.`;
+  }
+
+  private _collectAmbiguousImportViolations(): Array<{ token: string; producers: string[] }> {
+    const byToken = new Map<CanonicalId, Set<string>>();
+    const duplicateExposures: Array<{ canonical: CanonicalId; producerNames: string[] }> =
+      this.exposure.getDuplicateExposures();
+
+    for (const { canonical, producerNames } of duplicateExposures) {
+      const names = byToken.get(canonical) ?? new Set<string>();
+      for (const name of producerNames) names.add(name);
+      byToken.set(canonical, names);
+    }
+
+    for (const [canonical, globalRef] of this.exposure.globalMap) {
+      const exportedRef = this.exposure.exportedMap.get(canonical);
+      if (!exportedRef) continue;
+      if (globalRef.vault === exportedRef.vault && globalRef.canonical === exportedRef.canonical) {
+        continue;
+      }
+
+      const names = byToken.get(canonical as CanonicalId) ?? new Set<string>();
+      names.add(globalRef.vault.getName());
+      names.add(exportedRef.vault.getName());
+      byToken.set(canonical as CanonicalId, names);
+    }
+
+    return Array.from(byToken.entries()).map(([canonical, producers]) => ({
+      token: this._formatTokenForDiagnostics(canonical),
+      producers: Array.from(producers).sort(),
+    }));
   }
 
   /**
@@ -1740,7 +1850,8 @@ export class Vault {
       const producers = incoming.get(k);
       if (!producers || producers.length === 0) continue; // No conflict
 
-      const local = this.store.getByCanonical(k)!;
+      const local = this.store.getByCanonical(k);
+      if (!local) continue;
       violations.push({
         token: this._formatTokenForDiagnostics(k),
         producers: Array.from(new Set(producers)), // Deduplicate producer names

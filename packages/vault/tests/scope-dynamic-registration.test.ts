@@ -13,7 +13,7 @@ import { Container } from '../src/api/container';
 import type { Scope } from '../src/core/scope';
 import { token } from '../src/core/token';
 import { Vault } from '../src/core/vault';
-import { Injectable, Inject, Module as ModuleDecorator } from '../src/decorators';
+import { Inject, Injectable, Module as ModuleDecorator } from '../src/decorators';
 import { MissingInjectDecoratorError } from '../src/errors/errors';
 import { Lifecycle } from '../src/types/types';
 
@@ -50,7 +50,7 @@ class Logger {
   }
 }
 
-@Injectable({ provide: UserServiceT })
+@Injectable({ provide: UserServiceT, lifecycle: Lifecycle.Scoped })
 class UserService {
   constructor(
     @Inject(DatabaseT) public readonly db: Database,
@@ -98,7 +98,7 @@ describe('Scope Dynamic Registration - Phase 0.1', () => {
       expect(resolved.env).toBe('scope');
     });
 
-    it('should automatically register cleanup for disposable instances', () => {
+    it('should not automatically register cleanup for unowned disposable instances', () => {
       const db = new Database();
       let disposed = false;
       db.dispose = () => {
@@ -106,6 +106,19 @@ describe('Scope Dynamic Registration - Phase 0.1', () => {
       };
 
       scope.provide(DatabaseT, db);
+      scope.disposeSync();
+
+      expect(disposed).toBe(false);
+    });
+
+    it('should register cleanup for owned disposable instances', () => {
+      const db = new Database();
+      let disposed = false;
+      db.dispose = () => {
+        disposed = true;
+      };
+
+      scope.provide(DatabaseT, db, { owned: true });
       scope.disposeSync();
 
       expect(disposed).toBe(true);
@@ -235,7 +248,7 @@ describe('Scope Dynamic Registration - Phase 0.1', () => {
       const DepT = token<string>('ScopeTryResolveProvidedDep');
       const NeedsDepT = token<NeedsDep>('ScopeTryResolveNeedsProvidedDep');
 
-      @Injectable({ provide: NeedsDepT, lifecycle: Lifecycle.Singleton })
+      @Injectable({ provide: NeedsDepT, lifecycle: Lifecycle.Scoped })
       class NeedsDep {
         constructor(@Inject(DepT) readonly dep: string) {}
       }
@@ -313,7 +326,7 @@ describe('Scope Dynamic Registration - Phase 0.1', () => {
   });
 
   describe('Disposal cleanup', () => {
-    it('should cleanup scope-local instances on dispose', async () => {
+    it('should not cleanup unowned scope-local instances on dispose', async () => {
       const db = new Database();
       let disposed = false;
       db.dispose = () => {
@@ -323,17 +336,17 @@ describe('Scope Dynamic Registration - Phase 0.1', () => {
       scope.provide(DatabaseT, db);
       await scope.dispose();
 
-      expect(disposed).toBe(true);
+      expect(disposed).toBe(false);
     });
 
-    it('should cleanup scope-local instances on disposeSync', () => {
+    it('should cleanup owned scope-local instances on disposeSync', () => {
       const db = new Database();
       let disposed = false;
       db.dispose = () => {
         disposed = true;
       };
 
-      scope.provide(DatabaseT, db);
+      scope.provide(DatabaseT, db, { owned: true });
       scope.disposeSync();
 
       expect(disposed).toBe(true);
@@ -348,8 +361,8 @@ describe('Scope Dynamic Registration - Phase 0.1', () => {
       const logger = new Logger();
       (logger as any).dispose = () => disposals.push('logger');
 
-      scope.provide(DatabaseT, db);
-      scope.provide(LoggerT, logger);
+      scope.provide(DatabaseT, db, { owned: true });
+      scope.provide(LoggerT, logger, { owned: true });
 
       await scope.dispose();
 
@@ -385,8 +398,8 @@ describe('Scope Dynamic Registration - Phase 0.1', () => {
       const db2 = new Database();
       db2.dispose = () => disposals.push('db2');
 
-      scope1.provide(DatabaseT, db1);
-      scope2.provide(DatabaseT, db2);
+      scope1.provide(DatabaseT, db1, { owned: true });
+      scope2.provide(DatabaseT, db2, { owned: true });
 
       await scope1.dispose();
       expect(disposals).toEqual(['db1']);

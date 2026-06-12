@@ -38,6 +38,7 @@ import type { Disposable } from '../types/index.js';
 import type { Activator } from './activator.js';
 import {
   FLAG_HAS_INSTANCE,
+  FLAG_OWNS_INSTANCE,
   LIFECYCLE_MASK,
   LIFECYCLE_SCOPED,
   LIFECYCLE_SINGLETON,
@@ -158,6 +159,7 @@ export class ResolverAsync {
               entry.instance = value;
               entry.flags |= FLAG_HAS_INSTANCE;
               entry.promise = undefined;
+              this.vault._trackOwnedInstance(entry);
               this.vault.cache.primeAll(entry.token, entry);
               return value;
             })
@@ -211,6 +213,7 @@ export class ResolverAsync {
         // Auto-register cleanup: if instance has dispose() or close(), call on scope.dispose()
         if (
           value &&
+          entry.flags & FLAG_OWNS_INSTANCE &&
           (typeof value === 'object' || typeof value === 'function') &&
           (typeof (value as Disposable).dispose === 'function' ||
             typeof (value as Disposable).close === 'function')
