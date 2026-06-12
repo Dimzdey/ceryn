@@ -208,6 +208,8 @@ describe('Vault integration', () => {
       exports: [LocalToken],
     });
 
+    expect(appVault.has(LocalToken)).toBe(true);
+    expect(appVault.has(SharedToken)).toBe(true);
     expect(appVault.canResolve(LocalToken)).toBe(true);
     expect(appVault.canResolve(SharedToken)).toBe(true);
 
@@ -287,12 +289,14 @@ describe('Vault integration', () => {
     }
   });
 
-  it('validates canResolve input tokens', () => {
+  it('validates has() and canResolve() input tokens', () => {
     const TokenA = token('TokenA');
 
     const vault = new Vault({ providers: [] });
+    expect(vault.has(TokenA)).toBe(false);
     expect(vault.canResolve(TokenA)).toBe(false);
 
+    expect(() => vault.has({} as never)).toThrow(InvalidTokenError);
     expect(() => vault.canResolve({} as never)).toThrow(InvalidTokenError);
   });
 

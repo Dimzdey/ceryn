@@ -277,7 +277,7 @@ export class Scope {
 
     // Delegate to vault if available
     if (this.vault) {
-      return this.vault.canResolve(token);
+      return this.vault.has(token);
     }
 
     return false;
@@ -313,11 +313,14 @@ export class Scope {
   tryResolve<T>(token: Token<T>): T | undefined {
     if (this.disposed) return undefined;
 
-    // Only return undefined when the token cannot be resolved.
-    // Let other resolution errors propagate to aid debugging.
-    if (!this.has(token)) {
-      return undefined;
+    const localEntry = this.localRegistrations?.get(token.id);
+    if (localEntry && localEntry.flags & FLAG_HAS_INSTANCE) {
+      return localEntry.instance as T;
     }
+
+    if (!this.vault) return undefined;
+    if (!this.vault._canResolveInScope(token, this)) return undefined;
+
     return this.resolve(token);
   }
 
