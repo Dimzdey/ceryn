@@ -1,3 +1,7 @@
+## @ceryn/vault-v2.2.2 (2026-06-12)
+
+* fix(vault): enforce strict validation ([5ea5079](https://github.com/Dimzdey/ceryn/commit/5ea5079))
+
 ## @ceryn/vault-v2.2.1 (2026-06-11)
 
 * fix(vault): enforce module lifecycle rules ([1616723](https://github.com/Dimzdey/ceryn/commit/1616723))
