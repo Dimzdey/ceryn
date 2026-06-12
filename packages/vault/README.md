@@ -5,7 +5,7 @@ A **zero-reflection** dependency injection container for TypeScript that priorit
 ## Why Ceryn Vault?
 
 - **Zero Reflection**: No runtime reflection overhead - all metadata captured at decorator evaluation time
-- **Blazingly Fast**: 57x faster cold boot than nearest competitor, 1.5–2x faster warm resolution
+- **Low Overhead**: Resolution paths use precomputed metadata, bit flags, and singleton caching
 - **Type-Safe**: Full TypeScript support with compile-time type checking via phantom types
 - **Explicit Over Implicit**: Every dependency must be explicitly declared with `@Inject()`
 - **Modular Architecture**: Compose modules with imports for clean separation of concerns
@@ -16,6 +16,10 @@ A **zero-reflection** dependency injection container for TypeScript that priorit
 ```bash
 npm install @ceryn/vault
 ```
+
+## Package Format
+
+`@ceryn/vault` is published as an ESM package. Use `import` syntax in Node.js ESM and TypeScript projects. CommonJS `require()` is not part of the supported package contract.
 
 ## Quick Start
 
@@ -385,24 +389,11 @@ class ObservableModule {}
 
 ## Performance
 
-Ceryn Vault is designed for performance-critical applications.
+Ceryn Vault is designed for low-overhead resolution without runtime reflection. Benchmark results vary by runtime, dependency graph shape, dependency versions, and hardware. See `benchmarks/README.md` for the reproducible methodology before comparing results.
 
 ### Benchmark Results
 
-Compared against popular TypeScript DI containers on a realistic workload (6 endpoints, 3-layer dependency graph, singleton resolution):
-
-| Scenario                    | Ceryn       | Inversify | Tsyringe | TypeDI | Needle |
-| --------------------------- | ----------- | --------- | -------- | ------ | ------ |
-| **Cold boot**               | **0.24 ms** | 61 ms     | 88 ms    | 14 ms  | 14 ms  |
-| **Warm 1k requests**        | **129 ms**  | 217 ms    | 301 ms   | 301 ms | 290 ms |
-| **Burst 10k**               | **1.09 s**  | 1.85 s    | 2.55 s   | 2.56 s | 2.52 s |
-| **Cross-module resolve 5k** | **81 ms**   | 540 ms    | 679 ms   | 98 ms  | 149 ms |
-| **Scoped lifecycle 1k**     | **494 ms**  | —         | 1.01 s   | —      | —      |
-| **Async factory 100**       | **24 ms**   | —         | —        | —      | —      |
-
-> **Cold boot is 57–560x faster** than alternatives. Warm-state resolution is 1.7–2.3x faster. Measured on Node v22, median values.
-
-> **Scoped lifecycle note:** Ceryn scopes include `provide()` + `resolve()` + `disposeSync()` with full LIFO cleanup and auto-disposal of resources — yet still outperform Tsyringe's child containers which have no disposal semantics.
+The benchmark suite compares request-like dependency graphs across Ceryn Vault and selected TypeScript DI containers. Treat results as local measurements only unless the raw output includes environment details, dependency versions, iteration counts, and variance.
 
 ### Why it's fast
 
@@ -415,7 +406,7 @@ Compared against popular TypeScript DI containers on a realistic workload (6 end
 Run benchmarks yourself:
 
 ```bash
-npm run bench
+npm run bench -w packages/vault
 ```
 
 ## Architecture Patterns
