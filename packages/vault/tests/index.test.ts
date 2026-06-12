@@ -41,4 +41,20 @@ describe('package public index', () => {
     expect(typeof Module).toBe('function');
     expect(typeof Vault).toBe('function');
   });
+
+  it('keeps current root exports available', async () => {
+    const api = await import('../src/index.js');
+    expect(api.Container).toBeDefined();
+    expect(api.Injectable).toBeDefined();
+    expect(api.Inject).toBeDefined();
+    expect(api.Module).toBeDefined();
+    expect(api.Lifecycle).toBeDefined();
+  });
+
+  it('exposes legacy aliases from compat subpath source', async () => {
+    const compat = await import('../src/compat.js');
+    expect(compat.Genesis).toBeDefined();
+    expect(compat.Relic).toBeDefined();
+    expect(compat.Summon).toBeDefined();
+  });
 });
