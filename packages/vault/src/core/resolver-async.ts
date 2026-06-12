@@ -153,8 +153,9 @@ export class ResolverAsync {
         if (!entry.promise) {
           // Important: decouple underlying creation from caller's signal so the
           // shared creation continues even if an individual waiter aborts.
+          const creationStack = stack.slice();
           entry.promise = Promise.resolve()
-            .then(() => this.activator.instantiateAsync(entry, stack /* no signal */))
+            .then(() => this.activator.instantiateAsync(entry, creationStack /* no signal */))
             .then((value) => {
               entry.instance = value;
               entry.flags |= FLAG_HAS_INSTANCE;

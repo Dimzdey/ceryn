@@ -374,6 +374,38 @@ describe('Vault integration', () => {
     await expect(vault.resolveAsync(AsyncSingletonToken)).resolves.toBe(r1);
   });
 
+  it('does not report false cycles for shared async sibling dependencies', async () => {
+    const AToken = token<{ b: unknown; c: unknown }>('AsyncSiblingA');
+    const BToken = token<{ value: string }>('AsyncSiblingB');
+    const CToken = token<{ b: unknown }>('AsyncSiblingC');
+
+    const vault = new Vault({
+      providers: [
+        {
+          provide: AToken,
+          useFactory: (b: unknown, c: unknown) => ({ b, c }),
+          deps: [BToken, CToken],
+        },
+        {
+          provide: BToken,
+          useFactory: async () => {
+            await Promise.resolve();
+            return { value: 'b' };
+          },
+        },
+        {
+          provide: CToken,
+          useFactory: (b: unknown) => ({ b }),
+          deps: [BToken],
+        },
+      ],
+    });
+
+    const resolved = await vault.resolveAsync(AToken);
+
+    expect(resolved.b).toBe((resolved.c as { b: unknown }).b);
+  });
+
   it('resolves scoped async factories within scopes', async () => {
     const AsyncScopedToken = token('AsyncScoped');
     const disposer = vi.fn();

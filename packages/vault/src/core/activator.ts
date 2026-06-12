@@ -187,7 +187,7 @@ export class Activator {
       // on other async factories so we await them all here.
       const deps = await Promise.all(
         (entry.factoryDeps ?? EMPTY_DEPS).map((d) =>
-          this.vault._resolveProviderAsync(d, stack, signal, scope)
+          this.vault._resolveProviderAsync(d, stack.slice(), signal, scope)
         )
       );
 
@@ -223,7 +223,7 @@ export class Activator {
     const args = await Promise.all(
       entry.summons.map(async (dep, idx) => {
         if (!dep) throw new MissingInjectDecoratorError(entry.ctor!.name, idx);
-        return this.vault._resolveProviderAsync(dep, stack, signal, scope);
+        return this.vault._resolveProviderAsync(dep, stack.slice(), signal, scope);
       })
     );
 
