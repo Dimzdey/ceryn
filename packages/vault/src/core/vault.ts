@@ -22,6 +22,7 @@ import {
 import { MetadataRegistry } from '../registry/index.js';
 import type { Disposable, ShadowPolicy } from '../types/index.js';
 import {
+  assertLifecycle,
   Lifecycle,
   lifecycleToFlag,
   type ClassProvider,
@@ -1172,6 +1173,7 @@ export class Vault {
 
     // Lifecycle resolution: provider override > decorator metadata > default singleton
     const lifecycle = provider.lifecycle ?? def?.metadata.lifecycle ?? Lifecycle.Singleton;
+    assertLifecycle(lifecycle, 'Class provider');
     const lifecycleFlag = lifecycleToFlag(lifecycle);
     const metadata: ProviderMetadata = { name: canonical, label: token.label, lifecycle };
 
@@ -1269,6 +1271,7 @@ export class Vault {
       provider.deps?.map((dep) => (typeof dep === 'string' ? dep : dep.id)) ?? EMPTY_DEPS;
 
     const lifecycle = provider.lifecycle ?? Lifecycle.Singleton;
+    assertLifecycle(lifecycle, 'Factory provider');
     const lifecycleFlag = lifecycleToFlag(lifecycle);
     const metadata: ProviderMetadata = { name: canonical, label: token.label, lifecycle };
 

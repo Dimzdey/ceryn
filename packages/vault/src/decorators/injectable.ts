@@ -1,6 +1,6 @@
 import { isToken } from '../core/token.js';
 import { MetadataRegistry } from '../registry/index.js';
-import { Lifecycle } from '../types/index.js';
+import { assertLifecycle, Lifecycle } from '../types/index.js';
 import type { Constructor, ProviderMetadata, InjectableOptions } from '../types/types.js';
 
 /**
@@ -50,6 +50,9 @@ export function Injectable(options: InjectableOptions): ClassDecorator {
     const constructor = target as unknown as Constructor;
     const canonical = options.provide.id;
     const label = options.name ?? options.provide.label ?? constructor.name;
+    const lifecycle = options.lifecycle ?? Lifecycle.Singleton;
+
+    assertLifecycle(lifecycle, '@Injectable()');
 
     // Decorators run at module-evaluation time (import). We eagerly
     // normalize and freeze the metadata to make it immutable and safe to
@@ -58,7 +61,7 @@ export function Injectable(options: InjectableOptions): ClassDecorator {
     const metadata: ProviderMetadata = {
       name: canonical,
       label,
-      lifecycle: options.lifecycle ?? Lifecycle.Singleton,
+      lifecycle,
     };
 
     // Freeze metadata for immutability guarantees

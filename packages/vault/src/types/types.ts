@@ -1,4 +1,5 @@
 import type { CanonicalId, Token } from '../core/token.js';
+import { InvalidModuleConfigError } from '../errors/errors.js';
 import type { Vault } from '../core/vault.js';
 
 /**
@@ -69,6 +70,20 @@ export const Lifecycle = {
 export type LifecycleType = (typeof Lifecycle)[keyof typeof Lifecycle];
 export type Lifecycle = LifecycleType;
 
+export function isLifecycle(value: unknown): value is LifecycleType {
+  return (
+    value === Lifecycle.Singleton || value === Lifecycle.Scoped || value === Lifecycle.Transient
+  );
+}
+
+export function assertLifecycle(value: unknown, context: string): asserts value is LifecycleType {
+  if (!isLifecycle(value)) {
+    throw new InvalidModuleConfigError(
+      `${context} lifecycle must be one of: singleton, scoped, transient. Received: ${String(value)}`
+    );
+  }
+}
+
 /**
  * Convert a lifecycle type string to its corresponding bit flag value.
  *
@@ -100,8 +115,8 @@ export function lifecycleToFlag(lifecycle: LifecycleType): number {
     case 'transient':
       return 0b10; // LIFECYCLE_TRANSIENT
     default:
-      // Defensive: fall back to singleton if given invalid lifecycle
-      return 0b00; // LIFECYCLE_SINGLETON
+      assertLifecycle(lifecycle, 'Provider');
+      return 0b00; // Unreachable after assertLifecycle throws
   }
 }
 

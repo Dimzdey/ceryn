@@ -3,7 +3,7 @@ import { beforeEach, describe, expect, it } from 'vitest';
 import { Container } from '../src/api/container.js';
 import { token } from '../src/core/token.js';
 import { Vault } from '../src/core/vault.js';
-import { Module as ModuleDecorator } from '../src/decorators/index.js';
+import { Injectable, Module as ModuleDecorator } from '../src/decorators/index.js';
 import { InvalidModuleConfigError } from '../src/errors/errors.js';
 import { MetadataRegistry } from '../src/registry/metadata-registry.js';
 import { Lifecycle } from '../src/types/types.js';
@@ -15,6 +15,56 @@ beforeEach(() => {
 });
 
 describe('Provider validation', () => {
+  it('throws for invalid lifecycle on class provider override', () => {
+    class Service {}
+
+    const ServiceT = token<Service>('InvalidLifecycleClassService');
+
+    expect(
+      () =>
+        new Vault({
+          name: 'InvalidLifecycleClass',
+          providers: [
+            {
+              provide: ServiceT,
+              useClass: Service,
+              lifecycle: 'forever' as never,
+            },
+          ],
+        })
+    ).toThrow(InvalidModuleConfigError);
+  });
+
+  it('throws for invalid lifecycle on factory provider', () => {
+    class Service {}
+
+    const ServiceT = token<Service>('InvalidLifecycleFactoryService');
+
+    expect(
+      () =>
+        new Vault({
+          name: 'InvalidLifecycleFactory',
+          providers: [
+            {
+              provide: ServiceT,
+              useFactory: () => new Service(),
+              lifecycle: 'forever' as never,
+            },
+          ],
+        })
+    ).toThrow(InvalidModuleConfigError);
+  });
+
+  it('throws for invalid lifecycle on @Injectable metadata', () => {
+    class Service {}
+
+    const ServiceT = token<Service>('InvalidLifecycleDecoratedService');
+
+    expect(() => {
+      Injectable({ provide: ServiceT, lifecycle: 'forever' as never })(Service);
+    }).toThrow(InvalidModuleConfigError);
+  });
+
   it('rejects duplicate local providers for the same token', () => {
     const SharedToken = token('ProviderDuplicate');
 
