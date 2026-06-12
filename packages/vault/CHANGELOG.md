@@ -1,3 +1,7 @@
+## @ceryn/vault-v2.2.3 (2026-06-12)
+
+* fix(vault): split has and canResolve ([21b5a43](https://github.com/Dimzdey/ceryn/commit/21b5a43))
+
 ## @ceryn/vault-v2.2.2 (2026-06-12)
 
 * fix(vault): enforce strict validation ([5ea5079](https://github.com/Dimzdey/ceryn/commit/5ea5079))
