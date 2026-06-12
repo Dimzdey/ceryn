@@ -12,8 +12,9 @@ import { beforeEach, describe, expect, it } from 'vitest';
 import { Container } from '../src/api/container';
 import type { Scope } from '../src/core/scope';
 import { token } from '../src/core/token';
-import type { Vault } from '../src/core/vault';
+import { Vault } from '../src/core/vault';
 import { Injectable, Inject, Module as ModuleDecorator } from '../src/decorators';
+import { Lifecycle } from '../src/types/types';
 
 // Test tokens
 const ConfigT = token<Config>('Config');
@@ -139,6 +140,22 @@ describe('Scope Dynamic Registration - Phase 0.1', () => {
     it('should return true for vault registrations', () => {
       // UserService is registered in vault
       expect(scope.has(UserServiceT)).toBe(true);
+    });
+
+    it('should reflect vault visibility rather than full resolvability', () => {
+      const MissingT = token<unknown>('ScopeHasMissingDep');
+      const NeedsMissingT = token<unknown>('ScopeHasVisibleToken');
+
+      @Injectable({ provide: NeedsMissingT, lifecycle: Lifecycle.Singleton })
+      class NeedsMissing {
+        constructor(@Inject(MissingT) readonly missing: unknown) {}
+      }
+
+      const localVault = new Vault({ providers: [NeedsMissing] });
+      const localScope = localVault.createScope();
+
+      expect(localVault.canResolve(NeedsMissingT)).toBe(false);
+      expect(localScope.has(NeedsMissingT)).toBe(true);
     });
 
     it('should return false for unregistered tokens', () => {
