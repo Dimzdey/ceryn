@@ -1533,7 +1533,14 @@ export class Vault {
     const crossVaultInstance = this._crossVaultSync<T>(token, stack, scope);
     if (crossVaultInstance !== undefined) return crossVaultInstance;
 
-    // Step 5: Token not found
+    // Step 5: Token not found — but if the token is already in the stack it is a
+    // cross-vault cycle: the dependency graph came back around to a token we are
+    // already resolving in another vault.
+    if (stack.includes(token)) {
+      const cycle = stack.slice(stack.indexOf(token)).concat(token);
+      throw new CircularDependencyError(cycle.map((t) => this.describeToken(t)));
+    }
+
     throw this.buildNotFoundError(token, stack);
   }
 
@@ -1624,7 +1631,14 @@ export class Vault {
     const crossVaultInstance = await this._crossVaultAsync<T>(token, stack, signal, scope);
     if (crossVaultInstance !== undefined) return crossVaultInstance;
 
-    // Step 5: Token not found
+    // Step 5: Token not found — but if the token is already in the stack it is a
+    // cross-vault cycle: the dependency graph came back around to a token we are
+    // already resolving in another vault.
+    if (stack.includes(token)) {
+      const cycle = stack.slice(stack.indexOf(token)).concat(token);
+      throw new CircularDependencyError(cycle.map((t) => this.describeToken(t)));
+    }
+
     throw this.buildNotFoundError(token, stack);
   }
 
