@@ -1,3 +1,9 @@
+## @ceryn/vault-v2.3.0 (2026-06-12)
+
+* feat(vault): implement instance ownership tracking and ambiguous import detection ([ea96296](https://github.com/Dimzdey/ceryn/commit/ea96296))
+* fix(vault): split has and canResolve ([7761c6d](https://github.com/Dimzdey/ceryn/commit/7761c6d))
+* fix(vault): validate providers ([f35218a](https://github.com/Dimzdey/ceryn/commit/f35218a))
+
 ## @ceryn/vault-v2.2.3 (2026-06-12)
 
 * fix(vault): split has and canResolve ([21b5a43](https://github.com/Dimzdey/ceryn/commit/21b5a43))
