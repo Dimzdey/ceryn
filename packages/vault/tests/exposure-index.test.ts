@@ -1,7 +1,8 @@
 import { describe, expect, it } from 'vitest';
 
-import { Vault } from '../src/core/vault.js';
 import { token } from '../src/core/token.js';
+import { Vault } from '../src/core/vault.js';
+import { InvalidModuleConfigError } from '../src/errors/errors.js';
 
 describe('ExposureIndex', () => {
   it('indexes revealed and aether tokens with first-wins semantics', () => {
@@ -30,6 +31,7 @@ describe('ExposureIndex', () => {
     const root = new Vault({
       name: 'Root',
       imports: [aetherVault, duplicateVault, baseVault],
+      shadowPolicy: 'allow',
     });
 
     const version1 = root.exposure.compute(root);
@@ -101,5 +103,43 @@ describe('ExposureIndex', () => {
     expect(root.canResolve(ExportedToken)).toBe(true);
     expect(root.canResolve(UnexportedGlobalToken)).toBe(true);
     expect(root.resolve(UnexportedGlobalToken)).toBe(unexportedGlobalValue);
+  });
+
+  it('rejects ambiguous imported exports by default', () => {
+    const SharedToken = token('AmbiguousImport');
+
+    const first = new Vault({
+      name: 'FirstImport',
+      providers: [{ provide: SharedToken, useValue: 'first' }],
+      exports: [SharedToken],
+    });
+    const second = new Vault({
+      name: 'SecondImport',
+      providers: [{ provide: SharedToken, useValue: 'second' }],
+      exports: [SharedToken],
+    });
+
+    expect(() => new Vault({ name: 'Root', imports: [first, second] })).toThrow(
+      InvalidModuleConfigError
+    );
+  });
+
+  it('allows ambiguous imported exports when shadowPolicy is allow', () => {
+    const SharedToken = token('AllowedAmbiguousImport');
+
+    const first = new Vault({
+      name: 'FirstAllowedImport',
+      providers: [{ provide: SharedToken, useValue: 'first' }],
+      exports: [SharedToken],
+    });
+    const second = new Vault({
+      name: 'SecondAllowedImport',
+      providers: [{ provide: SharedToken, useValue: 'second' }],
+      exports: [SharedToken],
+    });
+
+    expect(
+      () => new Vault({ name: 'Root', imports: [first, second], shadowPolicy: 'allow' })
+    ).not.toThrow();
   });
 });

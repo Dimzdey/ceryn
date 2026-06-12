@@ -2,13 +2,13 @@ export { Container, Container as Genesis } from './api/container.js';
 export { createTokenGroup } from './api/token-utils.js';
 
 export {
-  Injectable,
-  Injectable as Relic,
   Inject,
-  Inject as Summon,
+  Injectable,
   Module,
-  Module as Vault,
   ModuleRegistry,
+  Injectable as Relic,
+  Inject as Summon,
+  Module as Vault,
   ModuleRegistry as VaultRegistry,
 } from './decorators/index.js';
 export {
@@ -22,19 +22,20 @@ export type {
   Constructor,
   FactoryProvider,
   InjectionToken,
+  ModuleConfig,
   Provider,
   ProviderMetadata,
   ProviderMetadata as RelicMetadata,
   StaticProviderDefinition,
   StaticProviderDefinition as StaticRelicDefinition,
   ValueProvider,
-  ModuleConfig,
   ModuleConfig as VaultConfig,
 } from './types/types.js';
 
 export * from './core/token.js';
 
 export { Scope } from './core/scope.js';
+export type { ScopeProvideOptions } from './core/scope.js';
 export { Vault as CoreContainer, Vault as CoreVault } from './core/vault.js';
 
 // Errors
@@ -43,22 +44,23 @@ export {
   CircularDependencyError,
   CircularModuleAttachmentError,
   CircularModuleAttachmentError as CircularVaultAttachmentError,
+  ContainerDisposedError,
   FactoryExecutionError,
+  InvalidModuleConfigError,
   InvalidProviderError,
   InvalidTokenError,
-  InvalidModuleConfigError,
   InvalidModuleConfigError as InvalidVaultConfigError,
   LazyFusionResolverMissingError,
   LazyResolverInvalidReturnError,
   LifecycleViolationError,
   MissingInjectableDecoratorError,
-  MissingInjectableDecoratorError as MissingRelicDecoratorError,
   MissingInjectDecoratorError,
+  MissingInjectableDecoratorError as MissingRelicDecoratorError,
   MissingInjectDecoratorError as MissingSummonDecoratorError,
   MultipleShadowPolicyViolationsError,
   ProviderNotExposedError,
-  ProviderNotExposedError as RelicNotExposedError,
   ProviderNotFoundError,
+  ProviderNotExposedError as RelicNotExposedError,
   ProviderNotFoundError as RelicNotFoundError,
   ScopeDisposedError,
   ScopedWithoutScopeError,
@@ -66,6 +68,5 @@ export {
   TokenCollisionError,
   UnconstructableProviderError,
   UnconstructableProviderError as UnconstructableRelicError,
-  ContainerDisposedError,
   ContainerDisposedError as VaultDisposedError,
 } from './errors/errors.js';

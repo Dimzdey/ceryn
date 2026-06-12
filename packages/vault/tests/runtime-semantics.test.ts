@@ -6,6 +6,8 @@ import { Inject, Injectable } from '../src/decorators/index.js';
 import {
   CircularDependencyError,
   InvalidTokenError,
+  LazyResolverInvalidReturnError,
+  MissingInjectDecoratorError,
   ScopedWithoutScopeError,
 } from '../src/errors/errors.js';
 import { Lifecycle } from '../src/types/types.js';
@@ -82,6 +84,19 @@ describe('Runtime visibility and resolvability', () => {
     expect(vault.canResolve(ServiceT)).toBe(false);
   });
 
+  it('canResolve() propagates missing @Inject metadata errors', () => {
+    const ServiceT = token<Service>('RuntimeMissingInjectService');
+
+    @Injectable({ provide: ServiceT })
+    class Service {
+      constructor(readonly dep: unknown) {}
+    }
+
+    const vault = new Vault({ providers: [Service] });
+
+    expect(() => vault.canResolve(ServiceT)).toThrow(MissingInjectDecoratorError);
+  });
+
   it('canResolve() returns false when a visible factory provider has missing deps', () => {
     const ServiceT = token('RuntimeFactoryNeedsMissing');
     const MissingT = token('RuntimeFactoryMissingDep');
@@ -98,6 +113,30 @@ describe('Runtime visibility and resolvability', () => {
 
     expect(vault.has(ServiceT)).toBe(true);
     expect(vault.canResolve(ServiceT)).toBe(false);
+  });
+
+  it('canResolve() propagates lazy import resolver configuration errors', () => {
+    const ImportedT = token('RuntimeLazyImportToken');
+
+    @Injectable({ provide: ImportedT })
+    class ImportedService {}
+
+    const vault = new Vault();
+
+    Object.assign(
+      vault as unknown as {
+        lazyImportClasses: Array<new () => unknown>;
+        lazyImportsResolved: boolean;
+        lazyResolver: (() => Vault) | undefined;
+      },
+      {
+        lazyImportClasses: [ImportedService],
+        lazyImportsResolved: false,
+        lazyResolver: () => ({}) as Vault,
+      }
+    );
+
+    expect(() => vault.canResolve(ImportedT)).toThrow(LazyResolverInvalidReturnError);
   });
 
   it('canResolve() returns false when lifecycle rules block resolution', () => {

@@ -10,12 +10,12 @@ describe('Scope.override() disposer management', () => {
     // Create first value with disposer
     const disposeSpy1 = vi.fn();
     const value1 = { dispose: disposeSpy1 };
-    scope.provide(TestT, value1);
+    scope.provide(TestT, value1, { owned: true });
 
     // Override with second value
     const disposeSpy2 = vi.fn();
     const value2 = { dispose: disposeSpy2 };
-    scope.override(TestT, value2);
+    scope.override(TestT, value2, { owned: true });
 
     // Dispose scope
     await scope.dispose();
@@ -32,9 +32,9 @@ describe('Scope.override() disposer management', () => {
     // Create and override multiple times
     const disposers = [vi.fn(), vi.fn(), vi.fn()];
 
-    scope.provide(TestT, { close: disposers[0] });
-    scope.override(TestT, { close: disposers[1] });
-    scope.override(TestT, { close: disposers[2] });
+    scope.provide(TestT, { close: disposers[0] }, { owned: true });
+    scope.override(TestT, { close: disposers[1] }, { owned: true });
+    scope.override(TestT, { close: disposers[2] }, { owned: true });
 
     await scope.dispose();
 
@@ -52,12 +52,12 @@ describe('Scope.override() disposer management', () => {
     // Provide values for both tokens
     const disposer1 = vi.fn();
     const disposer2 = vi.fn();
-    scope.provide(Token1, { dispose: disposer1 });
-    scope.provide(Token2, { dispose: disposer2 });
+    scope.provide(Token1, { dispose: disposer1 }, { owned: true });
+    scope.provide(Token2, { dispose: disposer2 }, { owned: true });
 
     // Override only Token1
     const newDisposer1 = vi.fn();
-    scope.override(Token1, { dispose: newDisposer1 });
+    scope.override(Token1, { dispose: newDisposer1 }, { owned: true });
 
     await scope.dispose();
 
@@ -76,7 +76,7 @@ describe('Scope.override() disposer management', () => {
 
     // Override with value that has disposer
     const disposeSpy = vi.fn();
-    scope.override(TestT, { dispose: disposeSpy });
+    scope.override(TestT, { dispose: disposeSpy }, { owned: true });
 
     await scope.dispose();
 
@@ -89,7 +89,7 @@ describe('Scope.override() disposer management', () => {
 
     // Provide value with disposer
     const disposeSpy = vi.fn();
-    scope.provide(TestT, { dispose: disposeSpy });
+    scope.provide(TestT, { dispose: disposeSpy }, { owned: true });
 
     // Override with value without disposer
     scope.override(TestT, { name: 'test' });
@@ -106,11 +106,11 @@ describe('Scope.override() disposer management', () => {
 
     // Provide async value
     const asyncDispose1 = vi.fn().mockResolvedValue(undefined);
-    scope.provide(TestT, { dispose: asyncDispose1 });
+    scope.provide(TestT, { dispose: asyncDispose1 }, { owned: true });
 
     // Override with another async value
     const asyncDispose2 = vi.fn().mockResolvedValue(undefined);
-    scope.override(TestT, { dispose: asyncDispose2 });
+    scope.override(TestT, { dispose: asyncDispose2 }, { owned: true });
 
     await scope.dispose();
 

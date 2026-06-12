@@ -7,7 +7,8 @@
  *   Bits 0-1:  Lifecycle type (2 bits = 4 possible values)
  *   Bit  2:    Has materialized instance
  *   Bit  3:    Has no dependencies (fast-path optimization)
- *   Bits 4-31: Reserved for future flags
+ *   Bit  4:    Container owns materialized instance and may dispose it
+ *   Bits 5-31: Reserved for future flags
  *
  * Design rationale:
  *   - Lifecycle in bits 0-1 for fast masking and comparison
@@ -43,6 +44,13 @@ export const FLAG_HAS_INSTANCE = 1 << 2; // Bit 2
  * Enables fast-path construction without dependency resolution.
  */
 export const FLAG_HAS_NO_DEPS = 1 << 3; // Bit 3
+
+/**
+ * State flag: Container owns the materialized instance.
+ * Owned instances are automatically disposed when their container/scope ends.
+ * External values such as useValue or scope.provide() are unowned by default.
+ */
+export const FLAG_OWNS_INSTANCE = 1 << 4; // Bit 4
 
 /**
  * Legacy alias for LIFECYCLE_SINGLETON (bit pattern 0b00).
