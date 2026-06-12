@@ -3,6 +3,7 @@
 /* eslint-disable no-duplicate-imports */
 import {
   AggregateDisposalError,
+  CircularDependencyError,
   CircularModuleAttachmentError,
   InvalidProviderError,
   InvalidTokenError,
@@ -13,6 +14,7 @@ import {
   MissingInjectableDecoratorError,
   MultipleShadowPolicyViolationsError,
   ProviderNotFoundError,
+  ScopedWithoutScopeError,
   ContainerDisposedError,
 } from '../errors/index.js';
 import { MetadataRegistry } from '../registry/index.js';
@@ -38,6 +40,7 @@ import {
   FLAG_HAS_INSTANCE,
   FLAG_HAS_NO_DEPS,
   LIFECYCLE_MASK,
+  LIFECYCLE_SCOPED,
   LIFECYCLE_SINGLETON,
 } from './flags.js';
 import { SingletonCache } from './singleton-cache.js';
@@ -598,6 +601,27 @@ export class Vault {
   }
 
   /**
+   * Check if a token is visible from this vault without instantiating it.
+   *
+   * Visibility rules:
+   * - Local providers are always visible
+   * - Imported exported providers are visible
+   * - Imported providers from global vaults are visible
+   * - Non-exported imported providers are not visible
+   *
+   * @param token - Token to check for visibility
+   * @returns true if the token is visible from this vault
+   * @throws InvalidTokenError if token is not a valid Token object
+   */
+  has<T>(token: Token<T>): boolean {
+    if (!isToken(token)) {
+      throw new InvalidTokenError(token);
+    }
+
+    return this._hasVisibleToken(token.id);
+  }
+
+  /**
    * Check if a token can be resolved without actually instantiating it.
    *
    * ⚠️ SIDE EFFECTS: This method triggers lazy attachment resolution, which:
@@ -640,18 +664,81 @@ export class Vault {
    * @internal
    */
   private _canResolveInternal(canonical: CanonicalId): boolean {
-    // Check local registration
-    const local = this._hasLocalEntry(canonical);
-    if (local) return true;
+    if (!this._hasVisibleToken(canonical)) return false;
 
-    // Trigger lazy attachment resolution (side effect!)
+    try {
+      this._validateResolvableGraph(canonical, [], true);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  private _hasVisibleToken(canonical: CanonicalId): boolean {
+    if (this._hasLocalEntry(canonical)) return true;
+
     this.resolveLazyAttachments();
+    return this.exposure.globalMap.has(canonical) || this.exposure.exportedMap.has(canonical);
+  }
 
-    // Check cross-vault exposure
-    if (this.exposure.globalMap.has(canonical)) return true;
-    if (this.exposure.exportedMap.has(canonical)) return true;
+  private _validateResolvableGraph(
+    canonical: CanonicalId,
+    stack: CanonicalId[],
+    isRoot = false
+  ): void {
+    const localEntry = this.store.getByCanonical(canonical);
+    if (localEntry) {
+      this._validateLocalResolvableGraph(canonical, localEntry, stack, isRoot);
+      return;
+    }
 
-    return false;
+    this.resolveLazyAttachments();
+    const hit = this._findCrossVaultEntry(canonical);
+    if (!hit) {
+      throw this.buildNotFoundError(canonical, stack);
+    }
+
+    const crossVaultEntry = hit.vault.store.getByCanonical(hit.canonical);
+    if (!crossVaultEntry) {
+      throw this.buildNotFoundError(canonical, stack);
+    }
+
+    this._validateLifecycleRulesForEntry(canonical, crossVaultEntry, stack);
+    hit.vault._validateLocalResolvableGraph(hit.canonical, crossVaultEntry, stack, isRoot);
+  }
+
+  private _validateLocalResolvableGraph(
+    canonical: CanonicalId,
+    entry: Entry,
+    stack: CanonicalId[],
+    isRoot = false
+  ): void {
+    if (stack.includes(canonical)) {
+      const cycle = stack.slice(stack.indexOf(canonical)).concat(canonical);
+      throw new CircularDependencyError(cycle.map((token) => this.describeToken(token)));
+    }
+
+    if (isRoot && (entry.flags & LIFECYCLE_MASK) === LIFECYCLE_SCOPED) {
+      throw new ScopedWithoutScopeError(entry.token, [this.describeToken(canonical)]);
+    }
+
+    stack.push(canonical);
+    try {
+      this._validateLifecycleRules(canonical, stack);
+
+      for (const dep of entry.summons) {
+        if (dep === undefined) {
+          throw this.buildNotFoundError(canonical, stack);
+        }
+        this._validateResolvableGraph(dep, stack);
+      }
+
+      for (const dep of entry.factoryDeps) {
+        this._validateResolvableGraph(dep, stack);
+      }
+    } finally {
+      stack.pop();
+    }
   }
 
   /**
@@ -839,7 +926,7 @@ export class Vault {
    * Check if a token is registered locally in this vault.
    *
    * This checks only local registrations, not tokens accessible via fusion.
-   * Use canResolve() to check if a token can be resolved (including imported tokens).
+   * Use has() to check if a token is visible (including imported tokens).
    *
    * @param token - Canonical token ID to check
    * @returns true if token is registered locally, false otherwise

@@ -277,7 +277,7 @@ export class Scope {
 
     // Delegate to vault if available
     if (this.vault) {
-      return this.vault.canResolve(token);
+      return this.vault.has(token);
     }
 
     return false;
