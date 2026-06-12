@@ -15,6 +15,7 @@ import {
   MissingInjectableDecoratorError,
   MultipleShadowPolicyViolationsError,
   ProviderNotFoundError,
+  TokenCollisionError,
   ScopedWithoutScopeError,
   ContainerDisposedError,
 } from '../errors/index.js';
@@ -347,7 +348,16 @@ export class Vault {
         );
       }
 
-      this._registerProvider(item);
+      try {
+        this._registerProvider(item);
+      } catch (error) {
+        if (error instanceof TokenCollisionError) {
+          throw new InvalidModuleConfigError(
+            `providers[${i}] duplicates token '${this._formatTokenForDiagnostics(error.token)}'`
+          );
+        }
+        throw error;
+      }
     }
   }
 
@@ -375,6 +385,12 @@ export class Vault {
         );
       }
 
+      if (this.exportedTokens.has(item.id)) {
+        throw new InvalidModuleConfigError(
+          `exports[${i}] duplicates token '${this._formatTokenForDiagnostics(item.id)}'`
+        );
+      }
+
       this.exportedTokens.add(item.id);
     }
   }
@@ -398,6 +414,7 @@ export class Vault {
       );
     }
   }
+
   // ----- public API (surface used by consumers) -----
 
   /**
