@@ -1,3 +1,7 @@
+## @ceryn/vault-v2.3.1 (2026-06-12)
+
+* fix(vault): cross-vault edge cases ([c76ebba](https://github.com/Dimzdey/ceryn/commit/c76ebba))
+
 ## @ceryn/vault-v2.3.0 (2026-06-12)
 
 * feat(vault): implement instance ownership tracking and ambiguous import detection ([ea96296](https://github.com/Dimzdey/ceryn/commit/ea96296))
