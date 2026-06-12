@@ -142,6 +142,7 @@ export class Vault {
   private readonly _sourceClass?: Constructor;
 
   private disposed = false;
+  private disposing = false;
   private readonly disposalOrder: CanonicalId[] = [];
   private readonly disposalTracked = new Set<CanonicalId>();
   private shadowIncomingCache: Map<CanonicalId, string[]> | null = null;
@@ -468,6 +469,7 @@ export class Vault {
    * ```
    */
   createScope(): Scope {
+    this._assertUsable();
     return new Scope(this);
   }
 
@@ -512,7 +514,7 @@ export class Vault {
    */
   resolve<T = unknown>(token: Token<T>, opts?: { scope?: Scope }): T {
     assertValidToken(token); // Dev-only, stripped in production
-    if (this.disposed) throw new ContainerDisposedError(this.name);
+    this._assertUsable();
     const id = token.id;
 
     // OPTIMIZATION: Extract scope upfront to avoid repeated access
@@ -613,7 +615,7 @@ export class Vault {
     opts?: { signal?: AbortSignal; scope?: Scope }
   ): Promise<T> {
     assertValidToken(token); // Dev-only, stripped in production
-    if (this.disposed) throw new ContainerDisposedError(this.name);
+    this._assertUsable();
     const stack: CanonicalId[] = [];
 
     // OPTIMIZATION: Extract options upfront to avoid repeated access
@@ -637,6 +639,7 @@ export class Vault {
    * @throws InvalidTokenError if token is not a valid Token object
    */
   has<T>(token: Token<T>): boolean {
+    this._assertUsable();
     if (!isToken(token)) {
       throw new InvalidTokenError(token);
     }
@@ -670,6 +673,7 @@ export class Vault {
    * ```
    */
   canResolve<T>(token: Token<T>): boolean {
+    this._assertUsable();
     // Validate token parameter using isToken() helper
     if (!isToken(token)) {
       throw new InvalidTokenError(token);
@@ -864,7 +868,13 @@ export class Vault {
    * @throws AggregateDisposalError if one or more disposals fail
    */
   dispose(): void | Promise<void> {
-    if (this.disposed) return;
+    if (this.disposed || this.disposing) return;
+    this.disposing = true;
+
+    const finish = (): void => {
+      this.disposed = true;
+      this.disposing = false;
+    };
 
     const errors: Error[] = [];
     const pending: Promise<void>[] = [];
@@ -939,7 +949,7 @@ export class Vault {
 
     // Synchronous disposal path
     if (pending.length === 0) {
-      this.disposed = true;
+      finish();
       if (errors.length > 0) {
         throw new AggregateDisposalError(errors);
       }
@@ -948,9 +958,6 @@ export class Vault {
 
     // Asynchronous disposal path
     return Promise.allSettled(pending).then((results) => {
-      // Mark as disposed AFTER all disposal attempts complete
-      this.disposed = true;
-
       // Collect rejection reasons
       for (const result of results) {
         if (result.status === 'rejected') {
@@ -958,6 +965,9 @@ export class Vault {
           errors.push(error instanceof Error ? error : new Error(String(error)));
         }
       }
+
+      // Mark as disposed AFTER all disposal attempts complete
+      finish();
 
       // Throw aggregate error if any disposals failed
       if (errors.length > 0) {
@@ -1065,6 +1075,11 @@ export class Vault {
   }
 
   // ----- Registration Helpers -----
+
+  /** Guard to prevent late registration after finalization. */
+  private _assertUsable(): void {
+    if (this.disposed || this.disposing) throw new ContainerDisposedError(this.name);
+  }
 
   /** Guard to prevent late registration after finalization. */
   private _assertNotSealed() {

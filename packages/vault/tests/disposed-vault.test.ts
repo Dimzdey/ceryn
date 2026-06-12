@@ -27,4 +27,33 @@ describe('Disposed vault', () => {
 
     await expect(vault.resolveAsync(TokenA)).rejects.toThrow(ContainerDisposedError);
   });
+
+  it('rejects new resolution while async disposal is in progress', async () => {
+    const SlowT = token<Slow>('Slow');
+    const OtherT = token<Other>('Other');
+
+    class Slow {
+      dispose(): Promise<void> {
+        return new Promise((resolve) => setTimeout(resolve, 20));
+      }
+    }
+
+    class Other {}
+
+    const vault = new Vault({
+      name: 'DisposeRace',
+      providers: [
+        { provide: SlowT, useClass: Slow },
+        { provide: OtherT, useClass: Other },
+      ],
+    });
+
+    vault.resolve(SlowT);
+    const pendingDispose = vault.dispose();
+
+    expect(() => vault.resolve(OtherT)).toThrow(ContainerDisposedError);
+
+    await pendingDispose;
+    expect(() => vault.resolve(OtherT)).toThrow(ContainerDisposedError);
+  });
 });
