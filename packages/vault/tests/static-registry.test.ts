@@ -1,6 +1,9 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 
+import { Container } from '../src/api/container.js';
+import { Vault } from '../src/core/vault.js';
 import { token } from '../src/core/token.js';
+import { Injectable, Module } from '../src/decorators/index.js';
 import type { CanonicalId } from '../src/index.js';
 import { MetadataRegistry } from '../src/registry/metadata-registry.js';
 import { Lifecycle, type Constructor } from '../src/types/types.js';
@@ -14,6 +17,30 @@ const metadata = (name: CanonicalId, label: string) => ({
 describe('MetadataRegistry', () => {
   beforeEach(() => {
     MetadataRegistry.resetForTests();
+    Container.clearCache();
+    Vault.setDefaultLazyResolver(undefined);
+  });
+
+  it('can reset static container state between app/test instances', () => {
+    @Module({ providers: [], exports: [] })
+    class EmptyModule {}
+
+    const first = Container.from(EmptyModule);
+    Container.reset();
+    const second = Container.from(EmptyModule);
+
+    expect(second).not.toBe(first);
+  });
+
+  it('can clear metadata registry explicitly', () => {
+    const ServiceT = token<Service>('Service');
+
+    @Injectable({ provide: ServiceT })
+    class Service {}
+
+    expect(MetadataRegistry.buildDefinition(Service)).toBeDefined();
+    MetadataRegistry.clear();
+    expect(MetadataRegistry.buildDefinition(Service)).toBeUndefined();
   });
 
   it('records provider metadata and injection dependencies', () => {

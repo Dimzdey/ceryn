@@ -126,6 +126,18 @@ export class Container {
     this.lazyVaults.clear();
     this.resolving.clear();
   }
+
+  /**
+   * Reset all static container state.
+   *
+   * Use this in tests, HMR, or multi-app hosts that need to discard cached
+   * module instances and the bound default lazy resolver.
+   */
+  static reset(): void {
+    this.clearCache();
+    this.boundLazyResolver = undefined;
+    Vault.setDefaultLazyResolver(undefined);
+  }
 }
 
 /** @deprecated Use Container instead */

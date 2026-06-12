@@ -279,6 +279,15 @@ export class MetadataRegistry {
   }
 
   /**
+   * Clear decorator metadata from the default registry bag.
+   *
+   * Alias for reset() with clearer teardown semantics.
+   */
+  static clear(): void {
+    this.reset();
+  }
+
+  /**
    * Get the GlobalBag for a given namespace.
    *
    * @param namespace - Optional namespace for isolation (defaults to main bag)
