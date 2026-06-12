@@ -55,9 +55,9 @@ export class ProviderNotFoundError extends Error {
     }
 
     parts.push('To fix this:');
-    parts.push(`  1. Add @Injectable() decorator to ${token}`);
-    parts.push(`  2. Include it in the 'providers' array when constructing the module`);
-    parts.push(`  3. Check for typos in @Inject('${token}') or provider tokens`, '');
+    parts.push(`  1. Register a provider for token '${token}' in the Vault providers array`);
+    parts.push(`  2. If using a class provider, decorate it with @Injectable({ provide: Token })`);
+    parts.push(`  3. Check for token mismatches in @Inject(Token) or provider definitions`, '');
 
     super(format(`Cannot resolve provider '${token}'.`, parts));
     this.name = 'ProviderNotFoundError';
@@ -78,13 +78,14 @@ export class MissingInjectDecoratorError extends Error {
       `Parameter ${parameterIndex} of ${className} is missing a @Inject decorator.`,
       '',
       'Fix:',
-      `  - Add @Inject(SomeService) to the constructor parameter at index ${parameterIndex}`,
+      `  - Add @Inject(ServiceT) to the constructor parameter at index ${parameterIndex}`,
       '',
       'Example:',
-      `  @Injectable()`,
+      `  const ServiceT = token<${className}>('${className}');`,
+      `  @Injectable({ provide: ServiceT })`,
       `  class ${className} {`,
       `    constructor(`,
-      `      @Inject(SomeService) private service: SomeService`,
+      `      @Inject(ServiceT) private service: ${className}`,
       `    ) {}`,
       `  }`,
     ];
@@ -160,7 +161,7 @@ export class InvalidProviderError extends Error {
       'Invalid provider configuration',
       '',
       'Valid provider shapes:',
-      `  - A class constructor decorated with @Injectable()`,
+      `  - A class constructor decorated with @Injectable({ provide: Token })`,
       `  - An object with 'provide' and 'useClass'`,
       `  - An object with 'provide' and 'useValue'`,
       `  - An object with 'provide' and 'useFactory'`,
@@ -195,10 +196,10 @@ export class MissingInjectableDecoratorError extends Error {
     const dev = [
       'Missing @Injectable decorator',
       '',
-      `Class ${ctorName} is not decorated with @Injectable().`,
-      `Decorate it with @Injectable() or register it via an explicit provider.`,
+      `Class ${ctorName} is not decorated with @Injectable({ provide: Token }).`,
+      `Decorate it with @Injectable({ provide: Token }) or register it via an explicit provider.`,
     ];
-    super(format(`Class ${ctorName} must be decorated with @Injectable().`, dev));
+    super(format(`Class ${ctorName} must be decorated with @Injectable({ provide: Token }).`, dev));
     this.name = 'MissingInjectableDecoratorError';
   }
 }
@@ -256,7 +257,7 @@ export class ScopeDisposedError extends Error {
     const dev = [
       'Scope disposed',
       '',
-      'Scope has been disposed. Do not resolve scoped providers after endScope().',
+      'Scope has been disposed. Do not resolve scoped providers after scope.dispose().',
     ];
     super(format('Scope has been disposed.', dev));
     this.name = 'ScopeDisposedError';
@@ -331,7 +332,7 @@ export class ScopedWithoutScopeError extends Error {
       '',
       'To fix this:',
       '  1. Pass a scope when resolving:',
-      '     const scope = MyModule.beginScope();',
+      '     const scope = vault.createScope();',
       '     const instance = vault.resolve(Token, { scope });',
       '     await scope.dispose();',
       '',

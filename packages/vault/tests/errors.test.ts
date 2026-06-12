@@ -127,4 +127,29 @@ describe('error classes', () => {
     );
     expect(scopedTransient.message).toContain('scoped');
   });
+
+  it('uses current API names in provider-not-found guidance', () => {
+    const error = new ProviderNotFoundError('ServiceT', []);
+
+    expect(error.message).toContain("Register a provider for token 'ServiceT'");
+    expect(error.message).toContain('@Inject(Token)');
+    expect(error.message).not.toContain("@Inject('ServiceT')");
+  });
+
+  it('uses current API names in missing inject guidance', () => {
+    const error = new MissingInjectDecoratorError('Ctor', 1);
+
+    expect(error.message).toContain('@Injectable({ provide: ServiceT })');
+    expect(error.message).toContain('@Inject(ServiceT)');
+    expect(error.message).not.toContain('@Injectable()');
+    expect(error.message).not.toContain('@Inject(SomeService)');
+  });
+
+  it('uses current scope API in scoped resolution guidance', () => {
+    const error = new ScopedWithoutScopeError('ScopedT');
+
+    expect(error.message).toContain('const scope = vault.createScope();');
+    expect(error.message).not.toContain('beginScope');
+    expect(error.message).not.toContain('endScope');
+  });
 });
