@@ -1,3 +1,11 @@
+## @ceryn/vault-v2.2.1 (2026-06-11)
+
+* fix(vault): enforce module lifecycle rules ([1616723](https://github.com/Dimzdey/ceryn/commit/1616723))
+* chore(ci): add semantic-release-monorepo for path-based vault releases ([66b6f1b](https://github.com/Dimzdey/ceryn/commit/66b6f1b))
+* chore(ci): fix releaseRules - remove invalid wildcard ([5c52f9c](https://github.com/Dimzdey/ceryn/commit/5c52f9c))
+* chore(ci): make vault release rules airtight against non-vault commits ([cd82ccb](https://github.com/Dimzdey/ceryn/commit/cd82ccb))
+* chore(ci): scope vault releases to vault-only commits ([2b8e560](https://github.com/Dimzdey/ceryn/commit/2b8e560))
+
 ## 2.2.0 (2026-06-10)
 
 * fix(ci): ensure vault builds before fastify typecheck in CI ([13bb0f5](https://github.com/Dimzdey/ceryn/commit/13bb0f5))
