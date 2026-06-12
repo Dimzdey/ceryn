@@ -1,3 +1,13 @@
+## @ceryn/vault-v2.4.0 (2026-06-12)
+
+* feat(vault): expose legacy aliases via compat subpath ([8d9d437](https://github.com/Dimzdey/ceryn/commit/8d9d437))
+* feat(vault): expose test isolation reset hooks ([9795288](https://github.com/Dimzdey/ceryn/commit/9795288))
+* docs(vault): update package and benchmark docs ([b62836f](https://github.com/Dimzdey/ceryn/commit/b62836f))
+* fix(vault): isolate async resolution stacks ([875fbb0](https://github.com/Dimzdey/ceryn/commit/875fbb0))
+* fix(vault): refresh error guidance ([472c537](https://github.com/Dimzdey/ceryn/commit/472c537))
+* fix(vault): reject invalid lifecycle values ([df7dabc](https://github.com/Dimzdey/ceryn/commit/df7dabc))
+* fix(vault): reject resolution during disposal ([42fbf72](https://github.com/Dimzdey/ceryn/commit/42fbf72))
+
 ## @ceryn/vault-v2.3.1 (2026-06-12)
 
 * fix(vault): cross-vault edge cases ([c76ebba](https://github.com/Dimzdey/ceryn/commit/c76ebba))
