@@ -1,3 +1,7 @@
+## @ceryn/vault-v2.4.1 (2026-06-15)
+
+* fix(vault): clean up async resource leaks ([d005ae6](https://github.com/Dimzdey/ceryn/commit/d005ae6))
+
 ## @ceryn/vault-v2.4.0 (2026-06-12)
 
 * feat(vault): expose legacy aliases via compat subpath ([8d9d437](https://github.com/Dimzdey/ceryn/commit/8d9d437))
