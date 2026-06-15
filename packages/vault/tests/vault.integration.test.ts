@@ -374,6 +374,40 @@ describe('Vault integration', () => {
     await expect(vault.resolveAsync(AsyncSingletonToken)).resolves.toBe(r1);
   });
 
+  it('removes abort listeners after async singleton resolution completes', async () => {
+    const AsyncSingletonToken = token('AsyncSingletonAbortListenerCleanup');
+    const vault = new Vault({
+      providers: [
+        {
+          provide: AsyncSingletonToken,
+          lifecycle: Lifecycle.Singleton,
+          useFactory: async () => ({ value: 'singleton' }),
+        },
+      ],
+    });
+    const controller = new AbortController();
+    let activeAbortListeners = 0;
+    const addEventListener = controller.signal.addEventListener.bind(controller.signal);
+    const removeEventListener = controller.signal.removeEventListener.bind(controller.signal);
+
+    vi.spyOn(controller.signal, 'addEventListener').mockImplementation(
+      (type, listener, options) => {
+        if (type === 'abort') activeAbortListeners++;
+        return addEventListener(type, listener, options);
+      }
+    );
+    vi.spyOn(controller.signal, 'removeEventListener').mockImplementation(
+      (type, listener, options) => {
+        if (type === 'abort') activeAbortListeners--;
+        return removeEventListener(type, listener, options);
+      }
+    );
+
+    await vault.resolveAsync(AsyncSingletonToken, { signal: controller.signal });
+
+    expect(activeAbortListeners).toBe(0);
+  });
+
   it('does not report false cycles for shared async sibling dependencies', async () => {
     const AToken = token<{ b: unknown; c: unknown }>('AsyncSiblingA');
     const BToken = token<{ value: string }>('AsyncSiblingB');

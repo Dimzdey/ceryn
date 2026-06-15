@@ -74,7 +74,7 @@ const SINGLETON_MASK_CHECK = LIFECYCLE_MASK | FLAG_HAS_INSTANCE;
  * Development mode flag for conditional validation.
  * In production builds, token validation is skipped for maximum performance.
  */
-const IS_DEV = process.env.NODE_ENV !== 'production';
+const IS_DEV = typeof process !== 'undefined' && process.env?.NODE_ENV !== 'production';
 
 /**
  * Fast token validation helper (dev-only).

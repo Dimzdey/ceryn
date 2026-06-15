@@ -3,6 +3,21 @@ import { Scope } from '../src/core/scope.js';
 import { token } from '../src/core/token.js';
 
 describe('Scope.override() disposer management', () => {
+  it('should remove old disposer when providing the same token again', async () => {
+    const scope = new Scope();
+    const TestT = token<{ dispose: () => void }>('Test');
+    const disposeSpy1 = vi.fn();
+    const disposeSpy2 = vi.fn();
+
+    scope.provide(TestT, { dispose: disposeSpy1 }, { owned: true });
+    scope.provide(TestT, { dispose: disposeSpy2 }, { owned: true });
+
+    await scope.dispose();
+
+    expect(disposeSpy1).not.toHaveBeenCalled();
+    expect(disposeSpy2).toHaveBeenCalledOnce();
+  });
+
   it('should remove old disposer when overriding a value', async () => {
     const scope = new Scope();
     const TestT = token<{ dispose: () => void }>('Test');

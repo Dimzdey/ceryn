@@ -209,8 +209,11 @@ export class Scope {
   private setLocalValue<T>(token: Token<T>, value: T, isOverride: boolean, owned: boolean): void {
     if (this.disposed) throw new ScopeDisposedError();
 
-    // If this is an override, remove the old disposer first
-    if (isOverride && this.tokenDisposers?.has(token.id)) {
+    // Remove old scope-local disposer before replacing a token registration.
+    if (
+      (isOverride || this.localRegistrations?.has(token.id)) &&
+      this.tokenDisposers?.has(token.id)
+    ) {
       const oldDisposer = this.tokenDisposers.get(token.id);
       if (this.disposers) {
         const idx = oldDisposer ? this.disposers.indexOf(oldDisposer) : -1;

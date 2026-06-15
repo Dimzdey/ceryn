@@ -50,24 +50,38 @@ import type { Vault } from './vault.js';
 /**
  * Convert an AbortSignal into a Promise that rejects with an AbortError when
  * the signal fires. Returns `null` when no signal is provided.
- *
- * Note: The returned Promise (and its closure) stays in memory until the signal
- * fires or the signal itself is GC'd. This is inherent to the Promise.race
- * cancellation pattern and is minimal overhead (one closure per in-flight
- * async resolve). The event listener self-removes via the handler logic.
  */
 function abortAsPromise(signal?: AbortSignal) {
   if (!signal) return null;
   if (signal.aborted) {
-    return Promise.reject(new DOMException('Aborted', 'AbortError'));
+    return {
+      promise: Promise.reject(new DOMException('Aborted', 'AbortError')),
+      cleanup: () => {},
+    };
   }
-  return new Promise<never>((_, reject) => {
-    const onAbort = () => {
-      signal.removeEventListener('abort', onAbort);
+  let onAbort: (() => void) | undefined;
+  const promise = new Promise<never>((_, reject) => {
+    onAbort = () => {
       reject(new DOMException('Aborted', 'AbortError'));
     };
     signal.addEventListener('abort', onAbort, { once: true });
   });
+  return {
+    promise,
+    cleanup: () => {
+      if (onAbort) signal.removeEventListener('abort', onAbort);
+    },
+  };
+}
+
+async function raceWithAbort<T>(promise: Promise<T>, signal?: AbortSignal): Promise<T> {
+  const abortP = abortAsPromise(signal);
+  if (!abortP) return promise;
+  try {
+    return await Promise.race([promise, abortP.promise]);
+  } finally {
+    abortP.cleanup();
+  }
 }
 
 /**
@@ -174,12 +188,8 @@ export class ResolverAsync {
         // Per-caller cancellation: await the shared promise but allow the
         // caller to abort their wait without cancelling the shared creation.
         // Race the shared promise against the caller's abort signal.
-        const abortP = abortAsPromise(signal);
-        if (abortP) {
-          // IMPORTANT: do not affect entry.promise — caller only detaches
-          return (await Promise.race([entry.promise as Promise<T>, abortP])) as T;
-        }
-        return (await entry.promise) as T;
+        // IMPORTANT: do not affect entry.promise — caller only detaches
+        return await raceWithAbort(entry.promise as Promise<T>, signal);
       }
 
       // Scoped lifecycle: Instance per logical scope
@@ -233,8 +243,7 @@ export class ResolverAsync {
       const p = Promise.resolve().then(() =>
         this.activator.instantiateAsync(entry, stack, signal, scope)
       );
-      const abortP = abortAsPromise(signal);
-      return (await (abortP ? Promise.race([p, abortP]) : p)) as T;
+      return await raceWithAbort(p as Promise<T>, signal);
     } finally {
       stack.pop();
     }

@@ -2,10 +2,12 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { MetadataRegistry } from '../src/registry/metadata-registry.js';
 
+const originalProcess = process;
 const originalEnv = process.env.NODE_ENV;
 
 describe('Production environment branches', () => {
   afterEach(() => {
+    vi.stubGlobal('process', originalProcess);
     process.env.NODE_ENV = originalEnv;
     MetadataRegistry.resetForTests();
     vi.resetModules();
@@ -46,5 +48,18 @@ describe('Production environment branches', () => {
 
     const aggregate = new AggregateDisposalError([new Error('one'), new Error('two')]);
     expect(aggregate.message).toContain('2 disposal error');
+  });
+
+  it('can import vault module without a global process object', async () => {
+    try {
+      vi.stubGlobal('process', undefined);
+      vi.resetModules();
+
+      const { Vault } = await import('../src/core/vault.js');
+
+      expect(Vault).toBeDefined();
+    } finally {
+      vi.stubGlobal('process', originalProcess);
+    }
   });
 });
