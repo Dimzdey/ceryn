@@ -38,6 +38,7 @@ import {
   LIFECYCLE_SCOPED,
   LIFECYCLE_SINGLETON,
 } from './flags.js';
+import type { ResolutionPath } from './resolution-path.js';
 import type { Scope } from './scope.js';
 import type { CanonicalId } from './token.js';
 import type { Vault } from './vault.js';
@@ -70,29 +71,36 @@ export class ResolverSync {
    * @param canonical - Canonical token ID to resolve
    * @param stack - Dependency stack for cycle detection (mutated during traversal)
    * @param scope - Optional scope for scoped lifecycle instances
+   * @param boundaryAlreadyValidated - Skip this entry's lifecycle check after cross-vault validation
    * @returns Resolved instance of type T
    */
-  fromEntry<T>(canonical: CanonicalId, stack: CanonicalId[], scope?: Scope): T {
+  fromEntry<T>(
+    canonical: CanonicalId,
+    path: ResolutionPath,
+    scope?: Scope,
+    boundaryAlreadyValidated = false
+  ): T {
     const entry = this.vault.store.getByCanonical(canonical);
-    if (!entry) throw this.vault.buildNotFoundError(canonical, stack);
+    if (!entry) throw this.vault.buildNotFoundError(canonical, path.tokens);
 
     // Detect dependency cycles early with the current canonical token.
-    if (stack.includes(canonical)) {
-      const cycle = stack.slice(stack.indexOf(canonical)).concat(canonical);
-      throw new CircularDependencyError(cycle.map((t) => this.vault.describeToken(t)));
+    if (!path.tryEnter(canonical)) {
+      throw new CircularDependencyError(
+        path.cycle(canonical).map((t) => this.vault.describeToken(t))
+      );
     }
 
-    stack.push(canonical);
     try {
       // Extract lifecycle bits once for multiple checks (performance optimization)
       const lifecycleFlags = entry.flags & LIFECYCLE_MASK;
 
       // Validate lifecycle rules at resolution time (catches order-independent violations)
-      this.vault._validateLifecycleRules(canonical, stack);
+      if (!boundaryAlreadyValidated) this.vault._validateLifecycleRules(canonical, path);
 
       // Fast path: hot singleton instance already materialized
       // Check: lifecycle is singleton (0b00) AND instance flag is set
-      if ((entry.flags & LIFECYCLE_SINGLETON) === 0 && entry.flags & FLAG_HAS_INSTANCE) {
+      if (lifecycleFlags === LIFECYCLE_SINGLETON && entry.flags & FLAG_HAS_INSTANCE) {
+        this.vault.cache.primeAll(entry.token, entry);
         return entry.instance as T;
       }
 
@@ -107,13 +115,13 @@ export class ResolverSync {
       // Validate: Scoped lifecycle requires scope parameter
       // Performance: Single bit check before instantiation
       if (lifecycleFlags === LIFECYCLE_SCOPED && !scope) {
-        const chain = stack.map((id) => this.vault.describeToken(id));
+        const chain = path.tokens.map((id) => this.vault.describeToken(id));
         throw new ScopedWithoutScopeError(entry.token, chain);
       }
 
       // Instantiate via Activator. This enforces factory rules and throws if a
       // sync path mistakenly returns a Promise.
-      const value = this.activator.instantiateSync(entry, stack, scope);
+      const value = this.activator.instantiateSync(entry, path, scope);
 
       // Singleton: Commit instance to shared Entry and prime vault MRU cache
       // Lifecycle check: bits 0-1 are 0b00 (LIFECYCLE_SINGLETON)
@@ -155,7 +163,7 @@ export class ResolverSync {
 
       return value as T;
     } finally {
-      stack.pop();
+      path.leave(canonical);
     }
   }
 }

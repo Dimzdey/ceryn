@@ -42,13 +42,16 @@ import { ExposureIndex } from './exposure-index.js';
 import {
   FLAG_HAS_INSTANCE,
   FLAG_HAS_NO_DEPS,
+  FLAG_LOCAL_DEPS_VALIDATED,
   FLAG_OWNS_INSTANCE,
+  FLAG_VALUE_PROVIDER,
   LIFECYCLE_MASK,
   LIFECYCLE_SCOPED,
   LIFECYCLE_SINGLETON,
 } from './flags.js';
 import { ResolverAsync } from './resolver-async.js';
 import { ResolverSync } from './resolver-sync.js';
+import { ResolutionPath } from './resolution-path.js';
 import { Scope } from './scope.js';
 import { SingletonCache } from './singleton-cache.js';
 import { isToken, type CanonicalId, type Token } from './token.js';
@@ -57,6 +60,103 @@ interface LegacyConfig {
 }
 // ---------- Internal constants ----------
 const EMPTY_DEPS: readonly CanonicalId[] = Object.freeze([] as CanonicalId[]);
+const EMPTY_ALIASES: readonly string[] = Object.freeze([] as string[]);
+type ProviderConfigSnapshot = {
+  source: Constructor | Provider;
+  provide?: unknown;
+  implementationKind?: 'useClass' | 'useValue' | 'useFactory';
+  implementation?: unknown;
+  lifecycle?: unknown;
+  owned?: unknown;
+  deps?: readonly unknown[];
+};
+type DecoratedLifecycleSummary = {
+  certified: ReadonlySet<CanonicalId>;
+  providers: readonly ProviderConfigSnapshot[];
+  metadataStamp: number;
+};
+const EMPTY_PROVIDER_SNAPSHOT: readonly ProviderConfigSnapshot[] = Object.freeze([]);
+let decoratedLifecycleSummaries = new WeakMap<object, DecoratedLifecycleSummary>();
+
+function providerImplementation(
+  source: Provider,
+  kind: 'useClass' | 'useValue' | 'useFactory'
+): unknown {
+  if (kind === 'useClass' && 'useClass' in source) return source.useClass;
+  if (kind === 'useFactory' && 'useFactory' in source) return source.useFactory;
+  if (kind === 'useValue' && 'useValue' in source) return source.useValue;
+  return undefined;
+}
+
+function snapshotProviders(
+  providers: Array<Constructor | Provider> | undefined
+): readonly ProviderConfigSnapshot[] {
+  if (!providers) return EMPTY_PROVIDER_SNAPSHOT;
+  return providers.map((source) => {
+    if (typeof source === 'function') return { source };
+    const implementationKind =
+      'useClass' in source
+        ? 'useClass'
+        : 'useFactory' in source
+          ? 'useFactory'
+          : ('useValue' as const);
+    const implementation = providerImplementation(source, implementationKind);
+    return {
+      source,
+      provide: source.provide,
+      implementationKind,
+      implementation,
+      lifecycle: 'lifecycle' in source ? source.lifecycle : undefined,
+      owned: 'owned' in source ? source.owned : undefined,
+      deps: 'deps' in source && source.deps ? source.deps.slice() : undefined,
+    };
+  });
+}
+
+function providersMatchSnapshot(
+  providers: Array<Constructor | Provider> | undefined,
+  snapshot: readonly ProviderConfigSnapshot[]
+): boolean {
+  if (!providers) return snapshot.length === 0;
+  if (providers.length !== snapshot.length) return false;
+
+  for (let index = 0; index < providers.length; index++) {
+    const source = providers[index];
+    const expected = snapshot[index];
+    if (source !== expected.source) return false;
+    if (typeof source === 'function') continue;
+
+    const implementationKind =
+      'useClass' in source
+        ? 'useClass'
+        : 'useFactory' in source
+          ? 'useFactory'
+          : ('useValue' as const);
+    if (
+      source.provide !== expected.provide ||
+      implementationKind !== expected.implementationKind ||
+      providerImplementation(source, implementationKind) !== expected.implementation ||
+      ('lifecycle' in source ? source.lifecycle : undefined) !== expected.lifecycle ||
+      ('owned' in source ? source.owned : undefined) !== expected.owned
+    ) {
+      return false;
+    }
+
+    const deps = 'deps' in source ? source.deps : undefined;
+    const expectedDeps = expected.deps;
+    if (!deps || !expectedDeps) {
+      if (deps !== expectedDeps) return false;
+      continue;
+    }
+    if (deps.length !== expectedDeps.length) return false;
+    for (let depIndex = 0; depIndex < deps.length; depIndex++) {
+      if (deps[depIndex] !== expectedDeps[depIndex]) return false;
+    }
+  }
+  return true;
+}
+const NOT_FOUND = Symbol('ceryn.notFound');
+type NotFound = typeof NOT_FOUND;
 
 function missingDepsForConstructor(ctor: Constructor): readonly (CanonicalId | undefined)[] {
   if (ctor.length === 0) return EMPTY_DEPS;
@@ -97,6 +197,11 @@ function assertValidToken(token: unknown): asserts token is Token {
 
 export class Vault {
   private static defaultLazyResolver?: (c: Constructor) => Vault;
+
+  /** Clear cached decorated-module bootstrap summaries for reset/HMR workflows. */
+  static resetBootstrapCaches(): void {
+    decoratedLifecycleSummaries = new WeakMap<object, DecoratedLifecycleSummary>();
+  }
   /**
    * @internal Allows frameworks (e.g., Genesis) to provide a shared lazy resolver
    * for class-based fusion when individual vault configs do not supply one.
@@ -121,9 +226,9 @@ export class Vault {
   // Tokens this vault explicitly chooses to export to imported modules
   readonly exportedTokens = new Set<CanonicalId>();
 
-  // Fusion attachments (other vaults imported in). Supports lazy class-based
-  // attachments which are resolved the first time cross-vault indices are
-  // required.
+  // Fusion attachments (other vaults imported in). ExposureIndex detects
+  // structural changes when explicitly recomputed; callers must also explicitly
+  // recompute ancestor summaries. Materialized provider/scope caches are unaffected.
   readonly importedModules: Vault[] = [];
   private lazyImportClasses: Constructor[] = [];
   private lazyImportsResolved = false; // flip only after successful compute()
@@ -144,15 +249,29 @@ export class Vault {
 
   private disposed = false;
   private disposing = false;
+  private disposalPromise?: Promise<void>;
   private readonly disposalOrder: CanonicalId[] = [];
   private readonly disposalTracked = new Set<CanonicalId>();
   private shadowIncomingCache: Map<CanonicalId, string[]> | null = null;
   private shadowIncomingStamp = -1;
+  private readonly lifecycleSummaryKey?: object;
+  private readonly cachedLifecycleSummary?: ReadonlySet<CanonicalId>;
 
   constructor(config?: ModuleConfig | DecoratedModuleClass) {
     // Extract configuration from decorated vault class or use direct config
     // Decorated classes have __moduleCfg__ property attached by @Vault() decorator
     const rawCfg = this._extractConfig(config);
+    if (typeof config === 'function' && rawCfg) {
+      this.lifecycleSummaryKey = rawCfg as object;
+      const summary = decoratedLifecycleSummaries.get(this.lifecycleSummaryKey);
+      if (
+        summary &&
+        summary.metadataStamp === MetadataRegistry.stamp &&
+        providersMatchSnapshot(rawCfg.providers, summary.providers)
+      ) {
+        this.cachedLifecycleSummary = summary.certified;
+      }
+    }
 
     // Validate and freeze configuration (shallow freeze is acceptable since we
     // don't mutate nested objects and this is a one-time setup operation)
@@ -279,13 +398,29 @@ export class Vault {
 
     if (this.lazyImportClasses.length > 0) this.resolveLazyAttachments();
 
+    const hasImports = this.importedModules.length > 0;
+
     // Compute exposure indices if we have imported modules
-    if (this.importedModules.length > 0) this.exposure.compute(this);
+    if (hasImports && !this.exposure.isComputed) this.exposure.compute(this);
 
     this._validateExportedTokens();
 
     // Enforce shadow policy after all registrations and exposure are indexed
-    this._enforceShadowPolicy();
+    if (hasImports) this._enforceShadowPolicy();
+
+    // Cache only after the complete Vault bootstrap succeeds. Failed bootstrap
+    // attempts must perform full validation again on retry.
+    if (this.lifecycleSummaryKey && !this.cachedLifecycleSummary) {
+      const certified = new Set<CanonicalId>();
+      for (const entry of this.store.values()) {
+        if (entry.flags & FLAG_LOCAL_DEPS_VALIDATED) certified.add(entry.token);
+      }
+      decoratedLifecycleSummaries.set(this.lifecycleSummaryKey, {
+        certified,
+        providers: snapshotProviders(cfg.providers),
+        metadataStamp: MetadataRegistry.stamp,
+      });
+    }
   }
 
   /**
@@ -347,7 +482,7 @@ export class Vault {
       }
 
       // Validate provider objects have required properties
-      if (typeof item === 'object' && !this._isProvider(item)) {
+      if (typeof item !== 'function' && !this._isProvider(item)) {
         throw new InvalidModuleConfigError(
           `providers[${i}] must be a constructor or valid Provider object with 'provide' and one of 'useClass'/'useValue'/'useFactory'`
         );
@@ -549,21 +684,15 @@ export class Vault {
     // Local resolution
     const local = this.store.getByCanonical(id);
     if (local !== undefined) {
-      const stack: CanonicalId[] = [];
-      const out = this.resolverSync.fromEntry<T>(id, stack, scope);
-
-      // OPTIMIZATION: Only prime cache if singleton AND not already cached
-      if ((local.flags & LIFECYCLE_MASK) === LIFECYCLE_SINGLETON && cached === undefined) {
-        this.cache.primeAll(id, local);
-      }
-      return out;
+      const path = new ResolutionPath();
+      return this.resolverSync.fromEntry<T>(id, path, scope);
     }
 
     // Cross-vault (cold path)
     this.resolveLazyAttachments();
-    const stack: CanonicalId[] = [];
-    const x = this._crossVaultSync<T>(id, stack, scope);
-    if (x !== undefined) return x;
+    const path = new ResolutionPath();
+    const x = this._crossVaultSync<T>(id, path, scope);
+    if (x !== NOT_FOUND) return x;
 
     throw this.buildNotFoundError(id, []);
   }
@@ -611,19 +740,17 @@ export class Vault {
    * });
    * ```
    */
-  async resolveAsync<T = unknown>(
+  resolveAsync<T = unknown>(
     token: Token<T>,
     opts?: { signal?: AbortSignal; scope?: Scope }
   ): Promise<T> {
-    assertValidToken(token); // Dev-only, stripped in production
-    this._assertUsable();
-    const stack: CanonicalId[] = [];
-
-    // OPTIMIZATION: Extract options upfront to avoid repeated access
-    const signal = opts !== undefined ? opts.signal : undefined;
-    const scope = opts !== undefined ? opts.scope : undefined;
-
-    return this._resolveProviderAsync<T>(token.id, stack, signal, scope);
+    try {
+      assertValidToken(token); // Dev-only, stripped in production
+      this._assertUsable();
+      return this._resolveProviderAsync<T>(token.id, undefined, opts?.signal, opts?.scope);
+    } catch (error) {
+      return Promise.reject(error);
+    }
   }
 
   /**
@@ -695,7 +822,7 @@ export class Vault {
     if (!this._hasVisibleToken(canonical)) return false;
 
     try {
-      this._validateResolvableGraph(canonical, [], true);
+      this._validateResolvableGraph(canonical, new ResolutionPath(), true);
       return true;
     } catch (error) {
       if (!this._isExpectedCanResolveFailure(error)) throw error;
@@ -708,7 +835,7 @@ export class Vault {
     if (!this._hasVisibleToken(token.id)) return false;
 
     try {
-      this._validateResolvableGraph(token.id, [], false, scope);
+      this._validateResolvableGraph(token.id, new ResolutionPath(), false, scope);
       return true;
     } catch (error) {
       if (!this._isExpectedCanResolveFailure(error)) throw error;
@@ -734,69 +861,82 @@ export class Vault {
 
   private _validateResolvableGraph(
     canonical: CanonicalId,
-    stack: CanonicalId[],
+    path: ResolutionPath,
     isRoot = false,
     scope?: Scope
   ): void {
     const scopeEntry = scope?.getLocalEntry(canonical);
     if (scopeEntry && scopeEntry.flags & FLAG_HAS_INSTANCE) {
-      this._validateLifecycleRulesForEntry(canonical, scopeEntry, stack);
+      this._validateLifecycleRulesForEntry(canonical, scopeEntry, path);
       return;
     }
 
     const localEntry = this.store.getByCanonical(canonical);
     if (localEntry) {
-      this._validateLocalResolvableGraph(canonical, localEntry, stack, isRoot, scope);
+      this._validateLocalResolvableGraph(canonical, localEntry, path, isRoot, scope);
       return;
     }
 
     this.resolveLazyAttachments();
     const hit = this._findCrossVaultEntry(canonical);
     if (!hit) {
-      throw this.buildNotFoundError(canonical, stack);
+      if (path.has(canonical)) {
+        throw new CircularDependencyError(
+          path.cycle(canonical).map((token) => this.describeToken(token))
+        );
+      }
+      throw this.buildNotFoundError(canonical, path.tokens);
     }
 
     const crossVaultEntry = hit.vault.store.getByCanonical(hit.canonical);
     if (!crossVaultEntry) {
-      throw this.buildNotFoundError(canonical, stack);
+      throw this.buildNotFoundError(canonical, path.tokens);
     }
 
-    this._validateLifecycleRulesForEntry(canonical, crossVaultEntry, stack);
-    hit.vault._validateLocalResolvableGraph(hit.canonical, crossVaultEntry, stack, isRoot, scope);
+    this._validateLifecycleRulesForEntry(canonical, crossVaultEntry, path);
+    hit.vault._validateLocalResolvableGraph(
+      hit.canonical,
+      crossVaultEntry,
+      path,
+      isRoot,
+      scope,
+      true
+    );
   }
 
   private _validateLocalResolvableGraph(
     canonical: CanonicalId,
     entry: Entry,
-    stack: CanonicalId[],
+    path: ResolutionPath,
     isRoot = false,
-    scope?: Scope
+    scope?: Scope,
+    boundaryAlreadyValidated = false
   ): void {
-    if (stack.includes(canonical)) {
-      const cycle = stack.slice(stack.indexOf(canonical)).concat(canonical);
-      throw new CircularDependencyError(cycle.map((token) => this.describeToken(token)));
+    if (!path.tryEnter(canonical)) {
+      throw new CircularDependencyError(
+        path.cycle(canonical).map((token) => this.describeToken(token))
+      );
     }
 
-    if (isRoot && (entry.flags & LIFECYCLE_MASK) === LIFECYCLE_SCOPED) {
-      throw new ScopedWithoutScopeError(entry.token, [this.describeToken(canonical)]);
-    }
-
-    stack.push(canonical);
     try {
-      this._validateLifecycleRules(canonical, stack);
+      if (isRoot && (entry.flags & LIFECYCLE_MASK) === LIFECYCLE_SCOPED) {
+        throw new ScopedWithoutScopeError(entry.token, [this.describeToken(canonical)]);
+      }
+
+      if (!boundaryAlreadyValidated) this._validateLifecycleRules(canonical, path);
 
       for (const [idx, dep] of entry.summons.entries()) {
         if (dep === undefined) {
           throw new MissingInjectDecoratorError(entry.ctor?.name ?? entry.metadata.label, idx);
         }
-        this._validateResolvableGraph(dep, stack, false, scope);
+        this._validateResolvableGraph(dep, path, false, scope);
       }
 
       for (const dep of entry.factoryDeps) {
-        this._validateResolvableGraph(dep, stack, false, scope);
+        this._validateResolvableGraph(dep, path, false, scope);
       }
     } finally {
-      stack.pop();
+      path.leave(canonical);
     }
   }
 
@@ -811,6 +951,8 @@ export class Vault {
 
   /**
    * Clear cached instances and promises WITHOUT disposing them.
+   * Pre-created `useValue` registrations are retained because they cannot be
+   * reconstructed and are part of the container's static configuration.
    *
    * ⚠️ WARNING: POTENTIAL RESOURCE LEAK
    *
@@ -838,18 +980,26 @@ export class Vault {
    * @see dispose() for proper resource cleanup
    */
   clear(): void {
+    this.cache.clear();
+    this.disposalOrder.length = 0;
+    this.disposalTracked.clear();
+
     for (const canonical of this.store.canonicalKeys()) {
       const e = this.store.getByCanonical(canonical);
       if (!e) continue;
-      if (e.instance !== undefined) {
+
+      // useValue registrations are configuration, not recreatable cache entries.
+      if (e.flags & FLAG_VALUE_PROVIDER) {
+        this._trackOwnedInstance(e);
+        continue;
+      }
+
+      if (e.flags & FLAG_HAS_INSTANCE) {
         e.instance = undefined;
         e.flags &= ~FLAG_HAS_INSTANCE;
       }
       if (e.promise) e.promise = undefined;
     }
-    this.cache.clear();
-    this.disposalOrder.length = 0;
-    this.disposalTracked.clear();
   }
 
   /**
@@ -869,7 +1019,8 @@ export class Vault {
    * @throws AggregateDisposalError if one or more disposals fail
    */
   dispose(): void | Promise<void> {
-    if (this.disposed || this.disposing) return;
+    if (this.disposed) return;
+    if (this.disposing) return this.disposalPromise;
     this.disposing = true;
 
     const finish = (): void => {
@@ -958,7 +1109,7 @@ export class Vault {
     }
 
     // Asynchronous disposal path
-    return Promise.allSettled(pending).then((results) => {
+    this.disposalPromise = Promise.allSettled(pending).then((results) => {
       // Collect rejection reasons
       for (const result of results) {
         if (result.status === 'rejected') {
@@ -975,6 +1126,7 @@ export class Vault {
         throw new AggregateDisposalError(errors);
       }
     });
+    return this.disposalPromise;
   }
 
   /**
@@ -1022,7 +1174,7 @@ export class Vault {
     for (const k of this.store.canonicalKeys()) {
       const e = this.store.getByCanonical(k);
       if (!e) continue;
-      if (e.metadata.lifecycle === Lifecycle.Singleton && e.instance !== undefined)
+      if (e.metadata.lifecycle === Lifecycle.Singleton && e.flags & FLAG_HAS_INSTANCE)
         out.set(k, e.instance);
     }
     return out;
@@ -1103,8 +1255,6 @@ export class Vault {
       return;
     }
 
-    if (!this._isProvider(provider)) throw new InvalidProviderError(provider);
-
     if ('useClass' in provider) return void this._registerClassProvider(provider);
     if ('useValue' in provider) return void this._registerValueProvider(provider);
     if ('useFactory' in provider) return void this._registerFactoryProvider(provider);
@@ -1142,7 +1292,7 @@ export class Vault {
       factoryDeps: EMPTY_DEPS,
       metadata: def.metadata,
       summons: def.dependencies,
-      aliases: [canonical],
+      aliases: EMPTY_ALIASES,
       // Compose flags: lifecycle bits (0-1) + optimization flags (2+)
       flags: lifecycleFlag | FLAG_OWNS_INSTANCE | (hasNoDeps ? FLAG_HAS_NO_DEPS : 0),
     };
@@ -1150,8 +1300,7 @@ export class Vault {
     this.store.add(entry, this.name);
 
     // Validate lifecycle relationships at registration time when possible.
-    // If a dependency is not yet registered in this vault we defer validation
-    // (it may be validated when that dependency is registered).
+    // Missing local dependencies are validated later during resolution.
     this._validateDependencyLifecyclesForEntry(entry);
   }
 
@@ -1187,7 +1336,7 @@ export class Vault {
       factoryDeps: EMPTY_DEPS,
       metadata,
       summons: deps,
-      aliases: [canonical],
+      aliases: EMPTY_ALIASES,
       // Compose flags: lifecycle bits (0-1) + optimization flags (2+)
       flags: lifecycleFlag | FLAG_OWNS_INSTANCE | (hasNoDeps ? FLAG_HAS_NO_DEPS : 0),
     };
@@ -1228,13 +1377,14 @@ export class Vault {
       factoryDeps: EMPTY_DEPS,
       metadata,
       summons: EMPTY_DEPS,
-      aliases: [canonical],
+      aliases: EMPTY_ALIASES,
       instance: provider.useValue,
       // Flags: singleton (0b00) + has instance + no summons
       flags:
         LIFECYCLE_SINGLETON |
         FLAG_HAS_INSTANCE |
         FLAG_HAS_NO_DEPS |
+        FLAG_VALUE_PROVIDER |
         (provider.owned === true ? FLAG_OWNS_INSTANCE : 0),
     };
 
@@ -1281,7 +1431,7 @@ export class Vault {
       factoryDeps,
       metadata,
       summons: EMPTY_DEPS, // Not used for factories (factoryDeps used instead)
-      aliases: [canonical],
+      aliases: EMPTY_ALIASES,
       // Flags: lifecycle bits (0-1) + FLAG_HAS_NO_DEPS (factories don't use summons[])
       flags: lifecycleFlag | FLAG_HAS_NO_DEPS | (provider.owned === false ? 0 : FLAG_OWNS_INSTANCE),
     };
@@ -1297,36 +1447,50 @@ export class Vault {
    * This checks consumer -> dependency lifecycle relationships when the
    * dependency is already registered in the same vault. If a dependency is
    * not present yet (deferred registration or imported exposure) we skip
-   * validation; it will be validated when that dependency gets registered.
+   * validation; resolution performs the authoritative check later.
    */
   private _validateDependencyLifecyclesForEntry(entry: Entry): void {
-    const consumerLifecycle = entry.metadata.lifecycle;
-
-    // Collect dependencies from both ctor summons and factory deps
-    const depSet = new Set<CanonicalId>();
-    for (const d of entry.summons) if (d !== undefined) depSet.add(d);
-    for (const d of entry.factoryDeps) if (d !== undefined) depSet.add(d);
-
-    for (const depToken of depSet) {
-      const depEntry = this.store.getByCanonical(depToken);
-      if (!depEntry) continue; // Dependency not registered yet - defer
-
-      const depLifecycle = depEntry.metadata.lifecycle;
-
-      // Singleton cannot depend on Scoped or Transient
-      if (consumerLifecycle === Lifecycle.Singleton) {
-        if (depLifecycle === Lifecycle.Scoped || depLifecycle === Lifecycle.Transient) {
-          throw new LifecycleViolationError(
-            entry.metadata.label ?? entry.token,
-            consumerLifecycle,
-            depEntry.metadata.label ?? depEntry.token,
-            depLifecycle
-          );
-        }
+    if (this.cachedLifecycleSummary) {
+      if (this.cachedLifecycleSummary.has(entry.token)) {
+        entry.flags |= FLAG_LOCAL_DEPS_VALIDATED;
       }
+      return;
+    }
 
-      // Scoped cannot depend on Transient
-      if (consumerLifecycle === Lifecycle.Scoped && depLifecycle === Lifecycle.Transient) {
+    const consumerLifecycle = entry.metadata.lifecycle;
+    let allDependenciesValidated = true;
+
+    for (const depToken of entry.summons) {
+      if (depToken === undefined) {
+        allDependenciesValidated = false;
+        continue;
+      }
+      if (!this._validateDependencyLifecycle(entry, consumerLifecycle, depToken)) {
+        allDependenciesValidated = false;
+      }
+    }
+    for (const depToken of entry.factoryDeps) {
+      if (!this._validateDependencyLifecycle(entry, consumerLifecycle, depToken)) {
+        allDependenciesValidated = false;
+      }
+    }
+
+    if (allDependenciesValidated) entry.flags |= FLAG_LOCAL_DEPS_VALIDATED;
+  }
+
+  private _validateDependencyLifecycle(
+    entry: Entry,
+    consumerLifecycle: Lifecycle,
+    depToken: CanonicalId
+  ): boolean {
+    const depEntry = this.store.getByCanonical(depToken);
+    if (!depEntry) return false; // Dependency not registered yet - defer
+
+    const depLifecycle = depEntry.metadata.lifecycle;
+
+    // Singleton cannot depend on Scoped or Transient
+    if (consumerLifecycle === Lifecycle.Singleton) {
+      if (depLifecycle === Lifecycle.Scoped || depLifecycle === Lifecycle.Transient) {
         throw new LifecycleViolationError(
           entry.metadata.label ?? entry.token,
           consumerLifecycle,
@@ -1335,6 +1499,18 @@ export class Vault {
         );
       }
     }
+
+    // Scoped cannot depend on Transient
+    if (consumerLifecycle === Lifecycle.Scoped && depLifecycle === Lifecycle.Transient) {
+      throw new LifecycleViolationError(
+        entry.metadata.label ?? entry.token,
+        consumerLifecycle,
+        depEntry.metadata.label ?? depEntry.token,
+        depLifecycle
+      );
+    }
+
+    return true;
   }
 
   // ----- cross-vault helpers -----
@@ -1347,21 +1523,21 @@ export class Vault {
   /** Shared logic for cross-vault synchronous lookups. */
   private _crossVaultSync<T>(
     token: CanonicalId,
-    stack: CanonicalId[],
+    path: ResolutionPath,
     scope?: Scope
-  ): T | undefined {
+  ): T | NotFound {
     const hit = this._findCrossVaultEntry(token);
-    if (!hit) return;
+    if (!hit) return NOT_FOUND;
     const { vault, canonical } = hit;
     const e = vault.store.getByCanonical(canonical);
-    if (!e) throw this.buildNotFoundError(token, stack);
+    if (!e) throw this.buildNotFoundError(token, path.tokens);
     const lifecycleFlags = e.flags & LIFECYCLE_MASK;
-    this._validateLifecycleRulesForEntry(token, e, stack);
+    this._validateLifecycleRulesForEntry(token, e, path);
     if (lifecycleFlags === LIFECYCLE_SINGLETON && e.flags & FLAG_HAS_INSTANCE) {
       this.cache.primeAll(token, e);
       return e.instance as T;
     }
-    const out = vault.resolverSync.fromEntry<T>(canonical, stack, scope);
+    const out = vault.resolverSync.fromEntry<T>(canonical, path, scope, true);
     if (lifecycleFlags === LIFECYCLE_SINGLETON && e.flags & FLAG_HAS_INSTANCE) {
       this.cache.primeAll(token, e);
     }
@@ -1371,22 +1547,22 @@ export class Vault {
   /** Shared logic for cross-vault asynchronous lookups. */
   private async _crossVaultAsync<T>(
     token: CanonicalId,
-    stack: CanonicalId[],
+    path: ResolutionPath,
     signal?: AbortSignal,
     scope?: Scope
-  ): Promise<T | undefined> {
+  ): Promise<T | NotFound> {
     const hit = this._findCrossVaultEntry(token);
-    if (!hit) return;
+    if (!hit) return NOT_FOUND;
     const { vault, canonical } = hit;
     const e = vault.store.getByCanonical(canonical);
-    if (!e) throw this.buildNotFoundError(token, stack);
+    if (!e) throw this.buildNotFoundError(token, path.tokens);
     const lifecycleFlags = e.flags & LIFECYCLE_MASK;
-    this._validateLifecycleRulesForEntry(token, e, stack);
+    this._validateLifecycleRulesForEntry(token, e, path);
     if (lifecycleFlags === LIFECYCLE_SINGLETON && e.flags & FLAG_HAS_INSTANCE) {
       this.cache.primeAll(token, e);
       return e.instance as T;
     }
-    const out = await vault.resolverAsync.fromEntry<T>(canonical, stack, signal, scope);
+    const out = await vault.resolverAsync.fromEntry<T>(canonical, path, signal, scope, true);
     if (lifecycleFlags === LIFECYCLE_SINGLETON) this.cache.primeAll(token, e);
     return out;
   }
@@ -1402,34 +1578,37 @@ export class Vault {
    * @param token - The token being resolved
    * @param stack - Current dependency resolution stack (for error reporting)
    */
-  _validateLifecycleRules(token: CanonicalId, stack: CanonicalId[]): void {
-    if (stack.length === 0) return; // No parent to validate against
+  _validateLifecycleRules(token: CanonicalId, path: ResolutionPath): void {
+    const tokens = path.tokens;
+    if (tokens.length === 0) return; // No parent to validate against
 
     const entry = this.store.getByCanonical(token);
     if (!entry) return; // Cross-vault resolution, skip validation
 
-    this._validateLifecycleRulesForEntry(token, entry, stack);
+    this._validateLifecycleRulesForEntry(token, entry, path);
   }
 
   private _validateLifecycleRulesForEntry(
     dependencyToken: CanonicalId,
     dependencyEntry: Entry,
-    stack: CanonicalId[]
+    path: ResolutionPath
   ): void {
-    if (stack.length === 0) return;
+    const tokens = path.tokens;
+    let consumerIndex = tokens.length - 1;
+    if (consumerIndex >= 0 && tokens[consumerIndex] === dependencyToken) consumerIndex--;
+    if (consumerIndex < 0) return;
 
-    for (const consumerToken of stack) {
-      const consumerEntry = this.store.getByCanonical(consumerToken);
-      if (!consumerEntry) continue; // Cross-vault, skip
+    const consumerToken = tokens[consumerIndex];
+    const consumerEntry = this.store.getByCanonical(consumerToken);
+    if (!consumerEntry) return;
 
-      this._validateLifecyclePair(
-        consumerToken,
-        consumerEntry,
-        dependencyToken,
-        dependencyEntry,
-        stack
-      );
-    }
+    this._validateLifecyclePair(
+      consumerToken,
+      consumerEntry,
+      dependencyToken,
+      dependencyEntry,
+      tokens
+    );
   }
 
   private _validateLifecyclePair(
@@ -1437,7 +1616,7 @@ export class Vault {
     consumerEntry: Entry,
     dependencyToken: CanonicalId,
     dependencyEntry: Entry,
-    stack: CanonicalId[]
+    tokens: readonly CanonicalId[]
   ): void {
     const consumerLifecycle = consumerEntry.metadata.lifecycle;
     const dependencyLifecycle = dependencyEntry.metadata.lifecycle;
@@ -1449,7 +1628,7 @@ export class Vault {
       consumerLifecycle === Lifecycle.Scoped && dependencyLifecycle === Lifecycle.Transient;
 
     if (violatesSingletonRule || violatesScopedRule) {
-      const chain = stack.map((t) => this._formatTokenForDiagnostics(t));
+      const chain = tokens.map((t) => this._formatTokenForDiagnostics(t));
       throw new LifecycleViolationError(
         this._formatTokenForDiagnostics(consumerToken),
         consumerLifecycle,
@@ -1464,67 +1643,57 @@ export class Vault {
 
   /**
    * Check singleton cache for materialized instance.
-   * @returns Instance if found in cache, undefined otherwise
+   * @returns Instance if found in cache, or the private miss sentinel
    */
-  private _tryGetFromSingletonCache<T>(token: CanonicalId): T | undefined {
+  private _tryGetFromSingletonCache<T>(token: CanonicalId): T | NotFound {
     const cached = this.cache.get(token);
     if (cached !== undefined && (cached.flags & SINGLETON_MASK_CHECK) === SINGLETON_WITH_INSTANCE) {
       return cached.instance as T;
     }
-    return undefined;
+    return NOT_FOUND;
   }
 
   /**
    * Check scope cache for scoped instance.
-   * @returns Instance if found in scope cache, undefined otherwise
+   * @returns Instance if found in scope cache, or the private miss sentinel
    */
   private _tryGetFromScopeCache<T>(
     token: CanonicalId,
     scope?: Scope,
-    stack?: CanonicalId[]
-  ): T | undefined {
-    if (scope === undefined) return undefined;
+    path?: ResolutionPath
+  ): T | NotFound {
+    if (scope === undefined) return NOT_FOUND;
 
     // Check scope-local registrations first (highest priority)
     const localEntry = scope.getLocalEntry(token);
     if (localEntry && localEntry.flags & FLAG_HAS_INSTANCE) {
-      if (stack !== undefined) this._validateLifecycleRulesForEntry(token, localEntry, stack);
+      if (path !== undefined) this._validateLifecycleRulesForEntry(token, localEntry, path);
       return localEntry.instance as T;
     }
 
     // Then check scope cache for scoped-lifecycle instances
     const scopedCached = scope.cache.get(token);
     if (scopedCached !== undefined && scopedCached.flags & FLAG_HAS_INSTANCE) {
-      if (stack !== undefined) this._validateLifecycleRulesForEntry(token, scopedCached, stack);
+      if (path !== undefined) this._validateLifecycleRulesForEntry(token, scopedCached, path);
       return scopedCached.instance as T;
     }
-    return undefined;
+    return NOT_FOUND;
   }
 
   /**
    * Resolve token from local vault registry.
-   * @returns Resolved instance if token is registered locally, undefined otherwise
+   * @returns Resolved instance if registered locally, or the private miss sentinel
    */
   private _resolveLocal<T>(
     token: CanonicalId,
-    stack: CanonicalId[],
+    path: ResolutionPath,
     scope: Scope | undefined,
-    cachedEntry: Entry | undefined
-  ): T | undefined {
+    lifecycleAlreadyValidated: boolean
+  ): T | NotFound {
     const canonical = this._hasLocalEntry(token);
-    if (canonical === undefined) return undefined;
+    if (canonical === undefined) return NOT_FOUND;
 
-    const instance = this.resolverSync.fromEntry<T>(canonical, stack, scope);
-
-    // Prime cache only if singleton AND not already cached
-    if (cachedEntry === undefined) {
-      const entry = this.store.getByCanonical(canonical);
-      if (entry && (entry.flags & LIFECYCLE_MASK) === LIFECYCLE_SINGLETON) {
-        this.cache.primeAll(canonical, entry);
-      }
-    }
-
-    return instance;
+    return this.resolverSync.fromEntry<T>(canonical, path, scope, lifecycleAlreadyValidated);
   }
 
   /**
@@ -1532,87 +1701,62 @@ export class Vault {
    *
    * OPTIMIZED: Inline cache check with precomputed masks, simplified local resolution
    */
-  _resolveProvider<T>(token: CanonicalId, stack: CanonicalId[], scope?: Scope): T {
+  _resolveProvider<T>(
+    token: CanonicalId,
+    path: ResolutionPath,
+    scope?: Scope,
+    lifecycleAlreadyValidated = false
+  ): T {
     // Step 1: Check singleton cache
     const cachedInstance = this._tryGetFromSingletonCache<T>(token);
-    if (cachedInstance !== undefined) return cachedInstance;
+    if (cachedInstance !== NOT_FOUND) return cachedInstance;
 
     // Step 2: Check scope cache
-    const scopedInstance = this._tryGetFromScopeCache<T>(token, scope, stack);
-    if (scopedInstance !== undefined) return scopedInstance;
+    const scopedInstance = this._tryGetFromScopeCache<T>(token, scope, path);
+    if (scopedInstance !== NOT_FOUND) return scopedInstance;
 
     // Step 3: Try local resolution
-    const cachedEntry = this.cache.get(token);
-    const localInstance = this._resolveLocal<T>(token, stack, scope, cachedEntry);
-    if (localInstance !== undefined) return localInstance;
+    const localInstance = this._resolveLocal<T>(token, path, scope, lifecycleAlreadyValidated);
+    if (localInstance !== NOT_FOUND) return localInstance;
 
     // Step 4: Try cross-vault resolution
     this.resolveLazyAttachments();
-    const crossVaultInstance = this._crossVaultSync<T>(token, stack, scope);
-    if (crossVaultInstance !== undefined) return crossVaultInstance;
+    const crossVaultInstance = this._crossVaultSync<T>(token, path, scope);
+    if (crossVaultInstance !== NOT_FOUND) return crossVaultInstance;
 
     // Step 5: Token not found — but if the token is already in the stack it is a
     // cross-vault cycle: the dependency graph came back around to a token we are
     // already resolving in another vault.
-    if (stack.includes(token)) {
-      const cycle = stack.slice(stack.indexOf(token)).concat(token);
-      throw new CircularDependencyError(cycle.map((t) => this.describeToken(t)));
+    if (path.has(token)) {
+      throw new CircularDependencyError(path.cycle(token).map((t) => this.describeToken(t)));
     }
 
-    throw this.buildNotFoundError(token, stack);
+    throw this.buildNotFoundError(token, path.tokens);
   }
 
   // ----- resolution (async) -----
 
   /**
-   * Check singleton cache for materialized instance or in-flight promise.
-   * @returns Instance/promise if found in cache, undefined otherwise
-   */
-  private async _checkSingletonCacheAsync<T>(token: CanonicalId): Promise<T | undefined> {
-    const cached = this.cache.get(token);
-    if (cached === undefined) return undefined;
-
-    const lifecycleFlags = cached.flags & LIFECYCLE_MASK;
-    if (lifecycleFlags !== LIFECYCLE_SINGLETON) return undefined;
-
-    // Check for materialized instance first
-    if ((cached.flags & SINGLETON_MASK_CHECK) === SINGLETON_WITH_INSTANCE) {
-      return cached.instance as T;
-    }
-
-    // Check for in-flight promise
-    if (cached.promise !== undefined) {
-      return (await cached.promise) as T;
-    }
-
-    return undefined;
-  }
-
-  /**
    * Resolve token from local vault registry asynchronously.
-   * @returns Resolved instance if token is registered locally, undefined otherwise
+   * @returns Resolved instance if registered locally, or the private miss sentinel
    */
-  private async _resolveLocalAsync<T>(
+  private _resolveLocalAsync<T>(
     token: CanonicalId,
-    stack: CanonicalId[],
+    path: ResolutionPath,
     signal: AbortSignal | undefined,
     scope: Scope | undefined,
-    wasCached: boolean
-  ): Promise<T | undefined> {
+    lifecycleAlreadyValidated: boolean
+  ): Promise<T> | NotFound {
     const canonical = this._hasLocalEntry(token);
-    if (canonical === undefined) return undefined;
+    if (canonical === undefined) return NOT_FOUND;
 
-    const instance = await this.resolverAsync.fromEntry<T>(canonical, stack, signal, scope);
-
-    // Prime cache only if singleton AND not already cached
-    if (!wasCached) {
-      const entry = this.store.getByCanonical(canonical);
-      if (entry && (entry.flags & LIFECYCLE_MASK) === LIFECYCLE_SINGLETON) {
-        this.cache.primeAll(canonical, entry);
-      }
-    }
-
-    return instance;
+    return this.resolverAsync.fromEntry<T>(
+      canonical,
+      path,
+      signal,
+      scope,
+      lifecycleAlreadyValidated
+    );
   }
 
   /**
@@ -1625,39 +1769,59 @@ export class Vault {
    *
    * OPTIMIZED: Inline cache check with precomputed masks, simplified local resolution
    */
-  async _resolveProviderAsync<T>(
+  _resolveProviderAsync<T>(
     token: CanonicalId,
-    stack: CanonicalId[],
+    path?: ResolutionPath,
     signal?: AbortSignal,
-    scope?: Scope
+    scope?: Scope,
+    lifecycleAlreadyValidated = false
   ): Promise<T> {
-    // Step 1: Check singleton cache (instance or in-flight promise)
-    const cachedInstance = await this._checkSingletonCacheAsync<T>(token);
-    if (cachedInstance !== undefined) return cachedInstance;
+    try {
+      // Step 1: Probe singleton cache synchronously before allocating a path.
+      const cached = this.cache.get(token);
+      if (cached !== undefined && (cached.flags & LIFECYCLE_MASK) === LIFECYCLE_SINGLETON) {
+        if ((cached.flags & SINGLETON_MASK_CHECK) === SINGLETON_WITH_INSTANCE) {
+          return Promise.resolve(cached.instance as T);
+        }
+        if (cached.promise !== undefined) {
+          return this.resolverAsync.waitFor(cached.promise as Promise<T>, signal);
+        }
+      }
 
-    // Step 2: Check scope cache
-    const scopedInstance = this._tryGetFromScopeCache<T>(token, scope, stack);
-    if (scopedInstance !== undefined) return scopedInstance;
+      // Step 2: Probe scope cache; a public root call has no parent edge to validate.
+      const scopedInstance = this._tryGetFromScopeCache<T>(token, scope, path);
+      if (scopedInstance !== NOT_FOUND) return Promise.resolve(scopedInstance);
 
-    // Step 3: Try local resolution
-    const wasCached = this.cache.get(token) !== undefined;
-    const localInstance = await this._resolveLocalAsync<T>(token, stack, signal, scope, wasCached);
-    if (localInstance !== undefined) return localInstance;
+      const activePath = path ?? new ResolutionPath();
 
-    // Step 4: Try cross-vault resolution
-    this.resolveLazyAttachments();
-    const crossVaultInstance = await this._crossVaultAsync<T>(token, stack, signal, scope);
-    if (crossVaultInstance !== undefined) return crossVaultInstance;
+      // Step 3: Try local resolution.
+      const localInstance = this._resolveLocalAsync<T>(
+        token,
+        activePath,
+        signal,
+        scope,
+        lifecycleAlreadyValidated
+      );
+      if (localInstance !== NOT_FOUND) return localInstance;
 
-    // Step 5: Token not found — but if the token is already in the stack it is a
-    // cross-vault cycle: the dependency graph came back around to a token we are
-    // already resolving in another vault.
-    if (stack.includes(token)) {
-      const cycle = stack.slice(stack.indexOf(token)).concat(token);
-      throw new CircularDependencyError(cycle.map((t) => this.describeToken(t)));
+      // Step 4: Try cross-vault resolution.
+      this.resolveLazyAttachments();
+      return this._crossVaultAsync<T>(token, activePath, signal, scope).then(
+        (crossVaultInstance) => {
+          if (crossVaultInstance !== NOT_FOUND) return crossVaultInstance;
+
+          // Step 5: Preserve cross-vault cycle diagnostics before reporting not-found.
+          if (activePath.has(token)) {
+            throw new CircularDependencyError(
+              activePath.cycle(token).map((t) => this.describeToken(t))
+            );
+          }
+          throw this.buildNotFoundError(token, activePath.tokens);
+        }
+      );
+    } catch (error) {
+      return Promise.reject(error);
     }
-
-    throw this.buildNotFoundError(token, stack);
   }
 
   // ----- attachments / indices -----
@@ -1744,11 +1908,10 @@ export class Vault {
     const candidate = value as Partial<ClassProvider & ValueProvider & FactoryProvider>;
     if (!isToken(candidate.provide)) return false;
 
-    const implementationKeys = [
-      'useClass' in candidate,
-      'useValue' in candidate,
-      'useFactory' in candidate,
-    ].filter(Boolean).length;
+    let implementationKeys = 0;
+    if ('useClass' in candidate) implementationKeys++;
+    if ('useValue' in candidate) implementationKeys++;
+    if ('useFactory' in candidate) implementationKeys++;
     if (implementationKeys !== 1) return false;
 
     if ('useClass' in candidate && typeof candidate.useClass !== 'function') return false;
@@ -1785,8 +1948,15 @@ export class Vault {
   private _enforceShadowPolicy(): void {
     if (this.shadowPolicy === 'allow') return;
 
-    const violations = this._collectShadowViolations();
-    const ambiguousImports = this._collectAmbiguousImportViolations();
+    const hasShadowCandidates = this._hasShadowCandidates();
+    const hasAmbiguousCandidates =
+      this.exposure.duplicateMap.size > 0 ||
+      (this.exposure.globalMap.size > 0 && this.exposure.exportedMap.size > 0);
+
+    if (!hasShadowCandidates && !hasAmbiguousCandidates) return;
+
+    const violations = hasShadowCandidates ? this._collectShadowViolations() : [];
+    const ambiguousImports = hasAmbiguousCandidates ? this._collectAmbiguousImportViolations() : [];
 
     if (violations.length === 0 && ambiguousImports.length === 0) return;
 
@@ -1814,6 +1984,31 @@ export class Vault {
     }
 
     throw new InvalidModuleConfigError(this._formatAmbiguousImportViolations(ambiguousImports));
+  }
+
+  /** Fast, allocation-free guard for the common no-shadow case. */
+  private _hasShadowCandidates(): boolean {
+    const global = this.exposure.globalMap;
+    const exported = this.exposure.exportedMap;
+    const exposureSize = global.size + exported.size;
+    if (exposureSize === 0) return false;
+
+    // Iterate whichever side is smaller. Most modules import only a handful of
+    // tokens while registering many local providers.
+    if (this.store.size <= exposureSize) {
+      for (const canonical of this.store.canonicalKeys()) {
+        if (global.has(canonical) || exported.has(canonical)) return true;
+      }
+      return false;
+    }
+
+    for (const canonical of global.keys()) {
+      if (this.store.has(canonical as CanonicalId)) return true;
+    }
+    for (const canonical of exported.keys()) {
+      if (this.store.has(canonical as CanonicalId)) return true;
+    }
+    return false;
   }
 
   private _formatAmbiguousImportViolations(
@@ -1932,7 +2127,7 @@ export class Vault {
    * @param stack - Dependency chain (canonical IDs) leading to this token
    * @returns ProviderNotFoundError with formatted chain and suggestions
    */
-  buildNotFoundError(token: CanonicalId, stack: CanonicalId[]): ProviderNotFoundError {
+  buildNotFoundError(token: CanonicalId, stack: readonly CanonicalId[]): ProviderNotFoundError {
     const tokenName = this._formatTokenForDiagnostics(token);
     const available = this._getAvailableTokens().map((t) => this._formatTokenForDiagnostics(t));
 

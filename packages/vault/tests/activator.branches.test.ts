@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import type { Entry } from '../src/core/entry-store.js';
 import { FLAG_HAS_NO_DEPS } from '../src/core/flags.js';
+import { ResolutionPath } from '../src/core/resolution-path.js';
 import type { CanonicalId } from '../src/core/token.js';
 
 const baseEntry = (overrides: Partial<Entry> = {}): Entry => ({
@@ -50,7 +51,7 @@ describe('Activator branches', () => {
     vaultA.getInstantiateHook.mockReturnValue(perfHook);
     const activatorA = new withPerf(vaultA as never);
     const entry = baseEntry({ ctor: class {} });
-    expect(activatorA.instantiateSync(entry, [])).toBeInstanceOf(entry.ctor!);
+    expect(activatorA.instantiateSync(entry, new ResolutionPath())).toBeInstanceOf(entry.ctor!);
     expect(perfHook).toHaveBeenCalledWith(entry.token, expect.any(Number));
 
     const dateSpy = vi.spyOn(Date, 'now').mockReturnValue(10);
@@ -59,7 +60,7 @@ describe('Activator branches', () => {
     const fallbackHook = vi.fn();
     vaultB.getInstantiateHook.mockReturnValue(fallbackHook);
     const activatorB = new withoutPerf(vaultB as never);
-    expect(activatorB.instantiateSync(entry, [])).toBeInstanceOf(entry.ctor!);
+    expect(activatorB.instantiateSync(entry, new ResolutionPath())).toBeInstanceOf(entry.ctor!);
     expect(dateSpy).toHaveBeenCalled();
     expect(fallbackHook).toHaveBeenCalledWith(entry.token, expect.any(Number));
     dateSpy.mockRestore();
@@ -72,11 +73,11 @@ describe('Activator branches', () => {
     const entry = baseEntry({ ctor: class {} });
 
     // No hook path
-    expect(activator.instantiateSync(entry, [])).toBeInstanceOf(entry.ctor!);
+    expect(activator.instantiateSync(entry, new ResolutionPath())).toBeInstanceOf(entry.ctor!);
 
     const hook = vi.fn();
     vault.getInstantiateHook.mockReturnValue(hook);
-    expect(activator.instantiateSync(entry, [])).toBeInstanceOf(entry.ctor!);
+    expect(activator.instantiateSync(entry, new ResolutionPath())).toBeInstanceOf(entry.ctor!);
     expect(hook).toHaveBeenCalledWith(entry.token, expect.any(Number));
   });
 
@@ -87,14 +88,14 @@ describe('Activator branches', () => {
     const entryPromise = baseEntry({
       factory: () => Promise.resolve(123),
     });
-    expect(() => activator.instantiateSync(entryPromise, [])).toThrowError(
+    expect(() => activator.instantiateSync(entryPromise, new ResolutionPath())).toThrowError(
       /Factory execution failed/
     );
 
     const entryCurried = baseEntry({
       factory: () => () => Promise.resolve(1),
     });
-    expect(() => activator.instantiateSync(entryCurried, [])).toThrowError(
+    expect(() => activator.instantiateSync(entryCurried, new ResolutionPath())).toThrowError(
       /Factory execution failed/
     );
 
@@ -104,7 +105,7 @@ describe('Activator branches', () => {
         throw innerError;
       },
     });
-    expect(() => activator.instantiateSync(entryThrows, [])).toThrowError(
+    expect(() => activator.instantiateSync(entryThrows, new ResolutionPath())).toThrowError(
       /Factory execution failed/
     );
   });
@@ -118,13 +119,13 @@ describe('Activator branches', () => {
       ctor: undefined,
       instance: { prebuilt: true },
     });
-    expect(activator.instantiateSync(valueEntry, [])).toEqual({ prebuilt: true });
+    expect(activator.instantiateSync(valueEntry, new ResolutionPath())).toEqual({ prebuilt: true });
 
     const badValueEntry = baseEntry({
       ctor: undefined,
       instance: undefined,
     });
-    expect(() => activator.instantiateSync(badValueEntry, [])).toThrowError(
+    expect(() => activator.instantiateSync(badValueEntry, new ResolutionPath())).toThrowError(
       /Unconstructable provider/
     );
 
@@ -132,7 +133,7 @@ describe('Activator branches', () => {
       ctor: class Missing {},
       summons: [undefined],
     });
-    expect(() => activator.instantiateSync(missingDeps, [])).toThrowError(
+    expect(() => activator.instantiateSync(missingDeps, new ResolutionPath())).toThrowError(
       'Missing @Inject decorator'
     );
 
@@ -140,7 +141,9 @@ describe('Activator branches', () => {
       ctor: class ZeroDeps {},
       flags: FLAG_HAS_NO_DEPS,
     });
-    expect(activator.instantiateSync(zeroDeps, [])).toBeInstanceOf(zeroDeps.ctor!);
+    expect(activator.instantiateSync(zeroDeps, new ResolutionPath())).toBeInstanceOf(
+      zeroDeps.ctor!
+    );
   });
 
   it('covers async factory branches, including abort handling and currying', async () => {
@@ -151,7 +154,9 @@ describe('Activator branches', () => {
     const asyncEntry = baseEntry({
       factory: async () => 'async-result',
     });
-    await expect(activator.instantiateAsync(asyncEntry, [])).resolves.toBe('async-result');
+    await expect(activator.instantiateAsync(asyncEntry, new ResolutionPath())).resolves.toBe(
+      'async-result'
+    );
 
     const expectsSignal = baseEntry({
       factoryDeps: ['dep' as CanonicalId],
@@ -159,7 +164,9 @@ describe('Activator branches', () => {
     });
     vault._resolveProviderAsync.mockResolvedValueOnce('dep-value');
     const ac = new AbortController();
-    await expect(activator.instantiateAsync(expectsSignal, [], ac.signal)).resolves.toBe(ac.signal);
+    await expect(
+      activator.instantiateAsync(expectsSignal, new ResolutionPath(), ac.signal)
+    ).resolves.toBe(ac.signal);
 
     const curriedAsync = baseEntry({
       factory:
@@ -167,9 +174,9 @@ describe('Activator branches', () => {
         async ({ signal }: { signal: AbortSignal }) =>
           signal ? 'signalled' : 'plain',
     });
-    await expect(activator.instantiateAsync(curriedAsync, [], ac.signal)).resolves.toBe(
-      'signalled'
-    );
+    await expect(
+      activator.instantiateAsync(curriedAsync, new ResolutionPath(), ac.signal)
+    ).resolves.toBe('signalled');
 
     const abortingFactory = baseEntry({
       factory: async () => {
@@ -177,9 +184,9 @@ describe('Activator branches', () => {
       },
     });
     ac.abort();
-    await expect(activator.instantiateAsync(abortingFactory, [], ac.signal)).rejects.toThrow(
-      /Factory for/
-    );
+    await expect(
+      activator.instantiateAsync(abortingFactory, new ResolutionPath(), ac.signal)
+    ).rejects.toThrow(/Factory for/);
 
     const throwingFactory = baseEntry({
       factory: async () => {
@@ -188,7 +195,7 @@ describe('Activator branches', () => {
     });
     const controller = new AbortController();
     await expect(
-      activator.instantiateAsync(throwingFactory, [], controller.signal)
+      activator.instantiateAsync(throwingFactory, new ResolutionPath(), controller.signal)
     ).rejects.toThrowError(/Factory execution failed/);
 
     const missingCtor = baseEntry({
@@ -196,24 +203,61 @@ describe('Activator branches', () => {
       ctor: undefined,
       instance: undefined,
     });
-    await expect(activator.instantiateAsync(missingCtor, [])).rejects.toThrowError(
-      /Unconstructable provider/
-    );
+    await expect(
+      activator.instantiateAsync(missingCtor, new ResolutionPath())
+    ).rejects.toThrowError(/Unconstructable provider/);
 
     const zeroDeps = baseEntry({
       factory: undefined,
       ctor: class ZeroDep {},
       flags: FLAG_HAS_NO_DEPS,
     });
-    await expect(activator.instantiateAsync(zeroDeps, [])).resolves.toBeInstanceOf(zeroDeps.ctor!);
+    await expect(
+      activator.instantiateAsync(zeroDeps, new ResolutionPath())
+    ).resolves.toBeInstanceOf(zeroDeps.ctor!);
 
     const missingSummon = baseEntry({
       factory: undefined,
       ctor: class Missing {},
       summons: [undefined],
     });
-    await expect(activator.instantiateAsync(missingSummon, [])).rejects.toThrowError(
-      /Missing @Inject decorator/
-    );
+    await expect(
+      activator.instantiateAsync(missingSummon, new ResolutionPath())
+    ).rejects.toThrowError(/Missing @Inject decorator/);
+  });
+
+  it('skips Promise.all for an async factory without dependencies', async () => {
+    const { Activator } = await import('../src/core/activator.js');
+    const vault = stubVault();
+    const activator = new Activator(vault as never);
+    const aggregate = vi.spyOn(Promise, 'all');
+    const entry = baseEntry({ factoryDeps: [], factory: async () => 'value' });
+
+    const value = await activator.instantiateAsync(entry, new ResolutionPath());
+
+    expect(value).toBe('value');
+    expect(aggregate).not.toHaveBeenCalled();
+  });
+
+  it('retains concurrent aggregation with forked dependency paths', async () => {
+    const { Activator } = await import('../src/core/activator.js');
+    const vault = stubVault();
+    vault._resolveProviderAsync.mockResolvedValue('dependency');
+    const activator = new Activator(vault as never);
+    const aggregate = vi.spyOn(Promise, 'all');
+    const path = new ResolutionPath();
+    path.enter('root' as CanonicalId);
+    const entry = baseEntry({
+      factoryDeps: ['dependency' as CanonicalId],
+      factory: async (dependency) => dependency,
+    });
+
+    const value = await activator.instantiateAsync(entry, path);
+
+    expect(value).toBe('dependency');
+    expect(aggregate).toHaveBeenCalledTimes(1);
+    const dependencyPath = vault._resolveProviderAsync.mock.calls[0][1] as ResolutionPath;
+    expect(dependencyPath).not.toBe(path);
+    expect(dependencyPath.tokens).toEqual(path.tokens);
   });
 });

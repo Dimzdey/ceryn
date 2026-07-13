@@ -18,15 +18,15 @@ export class SingletonCache {
   }
 
   primeAll(requestToken: string, entry: Entry): void {
-    this.prime(entry.token, entry);
+    this.index.set(entry.token, entry);
+    if (requestToken === entry.token && entry.aliases.length === 0) return;
+
     if (requestToken !== entry.token) {
       this.prime(requestToken, entry);
     }
-    if (entry.aliases) {
-      for (const alias of entry.aliases) {
-        if (alias && alias !== entry.token && alias !== requestToken) {
-          this.prime(alias, entry);
-        }
+    for (const alias of entry.aliases) {
+      if (alias && alias !== entry.token && alias !== requestToken) {
+        this.prime(alias, entry);
       }
     }
   }

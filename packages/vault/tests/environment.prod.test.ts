@@ -1,9 +1,17 @@
+import { execFileSync } from 'node:child_process';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { createRequire } from 'node:module';
+import { tmpdir } from 'node:os';
+import { dirname, resolve } from 'node:path';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { MetadataRegistry } from '../src/registry/metadata-registry.js';
 
 const originalProcess = process;
 const originalEnv = process.env.NODE_ENV;
+const __dirname = fileURLToPath(new URL('.', import.meta.url));
+const nodeRequire = createRequire(import.meta.url);
 
 describe('Production environment branches', () => {
   afterEach(() => {
@@ -50,16 +58,44 @@ describe('Production environment branches', () => {
     expect(aggregate.message).toContain('2 disposal error');
   });
 
-  it('can import vault module without a global process object', async () => {
+  it('can import vault module without a global process object', () => {
+    const typescriptEntry = nodeRequire.resolve('typescript');
+    const tscPath = resolve(dirname(typescriptEntry), 'tsc.js');
+    const projectPath = resolve(__dirname, '../tsconfig.json');
+    const outputDir = mkdtempSync(resolve(tmpdir(), 'ceryn-vault-processless-'));
+
     try {
-      vi.stubGlobal('process', undefined);
-      vi.resetModules();
+      writeFileSync(resolve(outputDir, 'package.json'), '{"type":"module"}');
+      execFileSync(process.execPath, [
+        tscPath,
+        '--project',
+        projectPath,
+        '--outDir',
+        outputDir,
+        '--declaration',
+        'false',
+        '--declarationMap',
+        'false',
+        '--sourceMap',
+        'false',
+      ]);
 
-      const { Vault } = await import('../src/core/vault.js');
+      const moduleUrl = pathToFileURL(resolve(outputDir, 'core/vault.js')).href;
+      const output = execFileSync(
+        process.execPath,
+        [
+          '--input-type=module',
+          '--eval',
+          `globalThis.process = undefined; const { Vault } = await import(${JSON.stringify(
+            moduleUrl
+          )}); console.log(typeof Vault);`,
+        ],
+        { encoding: 'utf8' }
+      );
 
-      expect(Vault).toBeDefined();
+      expect(output.trim()).toBe('function');
     } finally {
-      vi.stubGlobal('process', originalProcess);
+      rmSync(outputDir, { recursive: true, force: true });
     }
   });
 });

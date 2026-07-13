@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { token } from '../src/core/token.js';
+import { token, type CanonicalId } from '../src/core/token.js';
 import { Vault } from '../src/core/vault.js';
 import { Inject, Injectable } from '../src/decorators/index.js';
 import {
@@ -11,6 +11,7 @@ import {
   LifecycleViolationError,
   MultipleShadowPolicyViolationsError,
   ProviderNotFoundError,
+  ScopeDisposedError,
   ScopedWithoutScopeError,
 } from '../src/errors/errors.js';
 import { MetadataRegistry } from '../src/registry/metadata-registry.js';
@@ -440,6 +441,58 @@ describe('Vault integration', () => {
     expect(resolved.b).toBe((resolved.c as { b: unknown }).b);
   });
 
+  it('isolates resolution paths across concurrent async sibling dependencies', async () => {
+    const Shared = token('PathForkShared');
+    const Left = token('PathForkLeft');
+    const Right = token('PathForkRight');
+    const Root = token('PathForkRoot');
+    const vault = new Vault({
+      providers: [
+        { provide: Shared, lifecycle: Lifecycle.Transient, useFactory: async () => 'shared' },
+        {
+          provide: Left,
+          lifecycle: Lifecycle.Transient,
+          deps: [Shared],
+          useFactory: async () => 'left',
+        },
+        {
+          provide: Right,
+          lifecycle: Lifecycle.Transient,
+          deps: [Shared],
+          useFactory: async () => 'right',
+        },
+        {
+          provide: Root,
+          lifecycle: Lifecycle.Transient,
+          deps: [Left, Right],
+          useFactory: async (...deps: unknown[]) => deps,
+        },
+      ],
+    });
+
+    await expect(vault.resolveAsync(Root)).resolves.toEqual(['left', 'right']);
+  });
+
+  it('bounds asynchronous Array.includes membership scans to the shallow path', async () => {
+    const tokens = Array.from({ length: 12 }, (_, index) => token(`AsyncPath${index}`));
+    const vault = new Vault({
+      providers: tokens.map((provide, index) => ({
+        provide,
+        lifecycle: Lifecycle.Transient,
+        deps: index + 1 < tokens.length ? [tokens[index + 1]] : [],
+        useFactory: async () => index,
+      })),
+    });
+    const includes = vi.spyOn(Array.prototype, 'includes');
+
+    await vault.resolveAsync(tokens[0]);
+
+    const ids = new Set(tokens.map((entry) => entry.id));
+    const cycleScans = includes.mock.calls.filter(([value]) => ids.has(value as CanonicalId));
+    includes.mockRestore();
+    expect(cycleScans).toHaveLength(9);
+  });
+
   it('resolves scoped async factories within scopes', async () => {
     const AsyncScopedToken = token('AsyncScoped');
     const disposer = vi.fn();
@@ -474,6 +527,163 @@ describe('Vault integration', () => {
     expect(disposer).toHaveBeenCalledTimes(2);
 
     await expect(vault.resolveAsync(AsyncScopedToken)).rejects.toThrow(ScopedWithoutScopeError);
+  });
+
+  it('deduplicates concurrent async scoped creation within one scope', async () => {
+    const AsyncScopedToken = token<{ id: symbol; dispose: () => void }>('ConcurrentAsyncScoped');
+    let releaseFactory: (() => void) | undefined;
+    const gate = new Promise<void>((resolve) => {
+      releaseFactory = resolve;
+    });
+    const disposer = vi.fn();
+    const factory = vi.fn(async () => {
+      await gate;
+      return { id: Symbol('scoped'), dispose: disposer };
+    });
+    const vault = new Vault({
+      providers: [
+        {
+          provide: AsyncScopedToken,
+          lifecycle: Lifecycle.Scoped,
+          useFactory: factory,
+        },
+      ],
+    });
+    const scope = vault.createScope();
+    const abortController = new AbortController();
+
+    const firstPending = vault.resolveAsync(AsyncScopedToken, { scope });
+    const secondPending = vault.resolveAsync(AsyncScopedToken, { scope });
+    const abortedPending = vault.resolveAsync(AsyncScopedToken, {
+      scope,
+      signal: abortController.signal,
+    });
+    await Promise.resolve();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(factory).toHaveBeenCalledTimes(1);
+    abortController.abort();
+    releaseFactory?.();
+
+    const [first, second] = await Promise.all([firstPending, secondPending]);
+    await expect(abortedPending).rejects.toThrow(DOMException);
+    expect(first).toBe(second);
+    expect(factory).toHaveBeenCalledTimes(1);
+
+    await scope.dispose();
+    expect(disposer).toHaveBeenCalledTimes(1);
+  });
+
+  it('waits for in-flight scoped creation before disposing the scope', async () => {
+    const AsyncScopedToken = token<{ dispose: () => void }>('DisposePendingAsyncScoped');
+    let signalStarted: (() => void) | undefined;
+    let releaseFactory: (() => void) | undefined;
+    const started = new Promise<void>((resolve) => {
+      signalStarted = resolve;
+    });
+    const gate = new Promise<void>((resolve) => {
+      releaseFactory = resolve;
+    });
+    const disposer = vi.fn();
+    const vault = new Vault({
+      providers: [
+        {
+          provide: AsyncScopedToken,
+          lifecycle: Lifecycle.Scoped,
+          useFactory: async () => {
+            signalStarted?.();
+            await gate;
+            return { dispose: disposer };
+          },
+        },
+      ],
+    });
+    const scope = vault.createScope();
+    const resolution = vault.resolveAsync(AsyncScopedToken, { scope });
+    const resolutionResult = resolution.then(
+      (value) => value,
+      (error: unknown) => error
+    );
+    await started;
+
+    let disposalSettled = false;
+    const disposal = scope.dispose().then(() => {
+      disposalSettled = true;
+    });
+    await Promise.resolve();
+
+    expect(disposalSettled).toBe(false);
+
+    releaseFactory?.();
+    await disposal;
+    expect(await resolutionResult).toBeInstanceOf(ScopeDisposedError);
+    expect(disposer).toHaveBeenCalledTimes(1);
+  });
+
+  it('disposes a completed async scoped value synchronously with disposeSync', async () => {
+    const AsyncScopedToken = token<{ dispose: () => void }>('SyncDisposeAsyncScoped');
+    const disposer = vi.fn();
+    const vault = new Vault({
+      providers: [
+        {
+          provide: AsyncScopedToken,
+          lifecycle: Lifecycle.Scoped,
+          useFactory: async () => ({ dispose: disposer }),
+        },
+      ],
+    });
+    const scope = vault.createScope();
+
+    await vault.resolveAsync(AsyncScopedToken, { scope });
+    scope.disposeSync();
+
+    expect(disposer).toHaveBeenCalledTimes(1);
+  });
+
+  it('aggregates synchronous disposal errors from completed async scoped values', async () => {
+    const AsyncScopedToken = token<{ dispose: () => void }>('ThrowingSyncDisposeAsyncScoped');
+    const vault = new Vault({
+      providers: [
+        {
+          provide: AsyncScopedToken,
+          lifecycle: Lifecycle.Scoped,
+          useFactory: async () => ({
+            dispose: () => {
+              throw new Error('scoped disposal failed');
+            },
+          }),
+        },
+      ],
+    });
+    const scope = vault.createScope();
+
+    await vault.resolveAsync(AsyncScopedToken, { scope });
+
+    expect(() => scope.disposeSync()).toThrow(AggregateDisposalError);
+  });
+
+  it('retries async scoped creation after a failed attempt', async () => {
+    const AsyncScopedToken = token<string>('RetryAsyncScoped');
+    const factory = vi
+      .fn()
+      .mockRejectedValueOnce(new Error('first scoped failure'))
+      .mockResolvedValue('scoped-success');
+    const vault = new Vault({
+      providers: [
+        {
+          provide: AsyncScopedToken,
+          lifecycle: Lifecycle.Scoped,
+          useFactory: factory,
+        },
+      ],
+    });
+    const scope = vault.createScope();
+
+    await expect(vault.resolveAsync(AsyncScopedToken, { scope })).rejects.toThrow(
+      FactoryExecutionError
+    );
+    await expect(vault.resolveAsync(AsyncScopedToken, { scope })).resolves.toBe('scoped-success');
+    expect(factory).toHaveBeenCalledTimes(2);
   });
 
   it('propagates already-aborted signals when resolving transients', async () => {

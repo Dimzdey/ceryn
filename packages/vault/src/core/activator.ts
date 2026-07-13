@@ -29,7 +29,8 @@ import {
   UnconstructableProviderError,
 } from '../errors/errors.js';
 import type { Entry } from './entry-store.js';
-import { FLAG_HAS_NO_DEPS } from './flags.js';
+import { FLAG_HAS_NO_DEPS, FLAG_LOCAL_DEPS_VALIDATED } from './flags.js';
+import type { ResolutionPath } from './resolution-path.js';
 import type { Scope } from './scope.js';
 import type { CanonicalId } from './token.js';
 import type { Vault } from './vault.js';
@@ -116,11 +117,16 @@ export class Activator {
    *    decorator metadata (i.e. undefined token in summons list).
    *  - Accepts optional scope for scoped lifecycle resolution.
    */
-  instantiateSync(entry: Entry, stack: CanonicalId[], scope?: Scope): unknown {
+  instantiateSync(entry: Entry, path: ResolutionPath, scope?: Scope): unknown {
+    const lifecycleAlreadyValidated =
+      scope === undefined && (entry.flags & FLAG_LOCAL_DEPS_VALIDATED) !== 0;
+
     // Factory-backed (sync only)
     if (entry.factory) {
       const deps = entry.factoryDeps ?? EMPTY_DEPS;
-      const args = deps.map((dep) => this.vault._resolveProvider(dep, stack, scope));
+      const args = deps.map((dep) =>
+        this.vault._resolveProvider(dep, path, scope, lifecycleAlreadyValidated)
+      );
       try {
         return this.instrumentSync(entry.token, () => {
           const result = entry.factory!(...args);
@@ -159,7 +165,7 @@ export class Activator {
     // Constructor with summons (sync)
     const args = entry.summons.map((dep, idx) => {
       if (!dep) throw new MissingInjectDecoratorError(entry.ctor!.name, idx);
-      return this.vault._resolveProvider(dep, stack, scope);
+      return this.vault._resolveProvider(dep, path, scope, lifecycleAlreadyValidated);
     });
 
     return this.instrumentSync(entry.token, () => new entry.ctor!(...args));
@@ -177,19 +183,31 @@ export class Activator {
    */
   async instantiateAsync(
     entry: Entry,
-    stack: CanonicalId[],
+    path: ResolutionPath,
     signal?: AbortSignal,
     scope?: Scope
   ): Promise<unknown> {
+    const lifecycleAlreadyValidated =
+      scope === undefined && (entry.flags & FLAG_LOCAL_DEPS_VALIDATED) !== 0;
+
     // Factory-backed (async-aware)
     if (entry.factory) {
       // Resolve factory deps asynchronously; factories may themselves depend
       // on other async factories so we await them all here.
-      const deps = await Promise.all(
-        (entry.factoryDeps ?? EMPTY_DEPS).map((d) =>
-          this.vault._resolveProviderAsync(d, stack.slice(), signal, scope)
-        )
-      );
+      let deps: readonly unknown[] = EMPTY_DEPS;
+      if (entry.factoryDeps.length > 0) {
+        deps = await Promise.all(
+          entry.factoryDeps.map((dependency) =>
+            this.vault._resolveProviderAsync(
+              dependency,
+              path.fork(),
+              signal,
+              scope,
+              lifecycleAlreadyValidated
+            )
+          )
+        );
+      }
 
       try {
         return await this.instrumentAsync(entry.token, async () => {
@@ -223,7 +241,13 @@ export class Activator {
     const args = await Promise.all(
       entry.summons.map(async (dep, idx) => {
         if (!dep) throw new MissingInjectDecoratorError(entry.ctor!.name, idx);
-        return this.vault._resolveProviderAsync(dep, stack.slice(), signal, scope);
+        return this.vault._resolveProviderAsync(
+          dep,
+          path.fork(),
+          signal,
+          scope,
+          lifecycleAlreadyValidated
+        );
       })
     );
 

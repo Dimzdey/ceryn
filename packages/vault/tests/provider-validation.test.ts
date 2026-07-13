@@ -1,20 +1,143 @@
-import { beforeEach, describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { Container } from '../src/api/container.js';
+import { FLAG_LOCAL_DEPS_VALIDATED } from '../src/core/flags.js';
 import { token } from '../src/core/token.js';
 import { Vault } from '../src/core/vault.js';
-import { Injectable, Module as ModuleDecorator } from '../src/decorators/index.js';
-import { InvalidModuleConfigError } from '../src/errors/errors.js';
+import { Inject, Injectable, Module as ModuleDecorator } from '../src/decorators/index.js';
+import { InvalidModuleConfigError, LifecycleViolationError } from '../src/errors/errors.js';
 import { MetadataRegistry } from '../src/registry/metadata-registry.js';
 import { Lifecycle } from '../src/types/types.js';
 
 beforeEach(() => {
   MetadataRegistry.resetForTests();
-  Container.clearCache();
-  Vault.setDefaultLazyResolver(undefined);
+  Container.reset();
 });
 
 describe('Provider validation', () => {
+  it('certifies only dependency edges validated in registration order', () => {
+    const Dependency = token('CertifiedDependency');
+    const Consumer = token('CertifiedConsumer');
+    const ordered = new Vault({
+      providers: [
+        { provide: Dependency, useFactory: () => 'dependency' },
+        { provide: Consumer, deps: [Dependency], useFactory: () => 'consumer' },
+      ],
+    });
+    const reverse = new Vault({
+      providers: [
+        { provide: Consumer, deps: [Dependency], useFactory: () => 'consumer' },
+        { provide: Dependency, useFactory: () => 'dependency' },
+      ],
+    });
+
+    expect(ordered.store.getByCanonical(Consumer.id)!.flags & FLAG_LOCAL_DEPS_VALIDATED).not.toBe(
+      0
+    );
+    expect(reverse.store.getByCanonical(Consumer.id)!.flags & FLAG_LOCAL_DEPS_VALIDATED).toBe(0);
+  });
+
+  it('reuses decorated lifecycle validation across clearCache but resets it explicitly', () => {
+    const Dependency = token('CachedValidationDependency');
+    const Consumer = token('CachedValidationConsumer');
+
+    @ModuleDecorator({
+      providers: [
+        { provide: Dependency, useFactory: () => 'dependency' },
+        { provide: Consumer, deps: [Dependency], useFactory: () => 'consumer' },
+      ],
+    })
+    class CachedValidationModule {}
+
+    const prototype = Vault.prototype as unknown as {
+      _validateDependencyLifecycle: (...args: unknown[]) => void;
+    };
+    const validation = vi.spyOn(prototype, '_validateDependencyLifecycle');
+
+    try {
+      Container.from(CachedValidationModule);
+      expect(validation).toHaveBeenCalledTimes(1);
+
+      Container.clearCache();
+      Container.from(CachedValidationModule);
+      expect(validation).toHaveBeenCalledTimes(1);
+
+      Container.reset();
+      Container.from(CachedValidationModule);
+      expect(validation).toHaveBeenCalledTimes(2);
+    } finally {
+      validation.mockRestore();
+    }
+  });
+
+  it('invalidates decorated lifecycle certification when provider config mutates', () => {
+    const Dependency = token('MutatedValidationDependency');
+    const Consumer = token('MutatedValidationConsumer');
+    const dependencyProvider = {
+      provide: Dependency,
+      useFactory: () => 'dependency',
+      lifecycle: Lifecycle.Singleton,
+    };
+
+    @ModuleDecorator({
+      providers: [
+        dependencyProvider,
+        { provide: Consumer, deps: [Dependency], useFactory: () => 'consumer' },
+      ],
+    })
+    class MutatedValidationModule {}
+
+    Container.from(MutatedValidationModule);
+    dependencyProvider.lifecycle = Lifecycle.Transient;
+    Container.clearCache();
+
+    expect(() => Container.from(MutatedValidationModule)).toThrow(LifecycleViolationError);
+  });
+
+  it('invalidates decorated lifecycle certification when class metadata mutates', () => {
+    const Dependency = token('MutatedMetadataDependency');
+    const Consumer = token('MutatedMetadataConsumer');
+
+    @Injectable({ provide: Dependency })
+    class DependencyService {}
+
+    @Injectable({ provide: Consumer })
+    class ConsumerService {
+      constructor(@Inject(Dependency) readonly dependency: DependencyService) {}
+    }
+
+    @ModuleDecorator({ providers: [DependencyService, ConsumerService] })
+    class MutatedMetadataModule {}
+
+    Container.from(MutatedMetadataModule);
+    Injectable({ provide: Dependency, lifecycle: Lifecycle.Transient })(DependencyService);
+    Container.clearCache();
+
+    expect(() => Container.from(MutatedMetadataModule)).toThrow(LifecycleViolationError);
+  });
+
+  it('validates each object provider shape once', () => {
+    const First = token('SingleValidationFirst');
+    const Second = token('SingleValidationSecond');
+    const prototype = Vault.prototype as unknown as {
+      _isProvider: (value: unknown) => boolean;
+    };
+    const validation = vi.spyOn(prototype, '_isProvider');
+
+    try {
+      new Vault({
+        providers: [
+          { provide: First, useValue: 1 },
+          { provide: Second, useFactory: () => 2 },
+        ],
+      });
+
+      expect(validation).toHaveBeenCalledTimes(2);
+    } finally {
+      validation.mockRestore();
+    }
+  });
+
   it('throws for invalid lifecycle on class provider override', () => {
     class Service {}
 

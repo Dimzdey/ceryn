@@ -38,6 +38,7 @@ describe('Container', () => {
 
     expect(vault1).toBe(vault2);
     expect(vaultFromCreate).toBe(vault1);
+    expect(vault1.getVaultClass()).toBe(AppModule);
     expect(vault1.resolve(SharedToken)).toBeInstanceOf(SharedService);
 
     Container.clearCache();

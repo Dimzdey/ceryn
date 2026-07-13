@@ -25,7 +25,11 @@ describe('Disposed vault', () => {
 
     vault.dispose();
 
-    await expect(vault.resolveAsync(TokenA)).rejects.toThrow(ContainerDisposedError);
+    let pending: Promise<unknown> | undefined;
+    expect(() => {
+      pending = vault.resolveAsync(TokenA);
+    }).not.toThrow();
+    await expect(pending).rejects.toThrow(ContainerDisposedError);
   });
 
   it('rejects new resolution while async disposal is in progress', async () => {
@@ -55,5 +59,28 @@ describe('Disposed vault', () => {
 
     await pendingDispose;
     expect(() => vault.resolve(OtherT)).toThrow(ContainerDisposedError);
+  });
+
+  it('returns the active disposal promise to concurrent callers', async () => {
+    const ResourceT = token<{ dispose: () => Promise<void> }>('ConcurrentDisposal');
+    let releaseDisposal: (() => void) | undefined;
+    const gate = new Promise<void>((resolve) => {
+      releaseDisposal = resolve;
+    });
+    const resource = {
+      dispose: () => gate,
+    };
+    const vault = new Vault({
+      providers: [{ provide: ResourceT, useValue: resource, owned: true }],
+    });
+
+    const first = vault.dispose();
+    const second = vault.dispose();
+
+    expect(first).toBeInstanceOf(Promise);
+    expect(second).toBe(first);
+
+    releaseDisposal?.();
+    await second;
   });
 });

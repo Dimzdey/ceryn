@@ -6,6 +6,7 @@
 
 import { beforeEach, describe, expect, it } from 'vitest';
 
+import { ResolutionPath } from '../src/core/resolution-path.js';
 import { token } from '../src/core/token.js';
 import { Vault } from '../src/core/vault.js';
 import { Inject, Injectable } from '../src/decorators/index.js';
@@ -106,6 +107,27 @@ describe('Resolution precedence', () => {
 // ---------------------------------------------------------------------------
 
 describe('Module re-export of imported tokens', () => {
+  it('does not expose a nested export unless the middle module re-exports it', () => {
+    const ServiceT = token<string>('NestedPrivateExport');
+
+    const producer = new Vault({
+      name: 'NestedProducer',
+      providers: [{ provide: ServiceT, useValue: 'produced' }],
+      exports: [ServiceT],
+    });
+    const middle = new Vault({
+      name: 'NestedMiddle',
+      imports: [producer],
+    });
+    const consumer = new Vault({
+      name: 'NestedConsumer',
+      imports: [middle],
+    });
+
+    expect(consumer.has(ServiceT)).toBe(false);
+    expect(() => consumer.resolve(ServiceT)).toThrow();
+  });
+
   it('a middle module can re-export a token it imported and did not define', () => {
     const ServiceT = token<string>('ReExportService');
 
@@ -121,6 +143,28 @@ describe('Module re-export of imported tokens', () => {
     });
     const consumer = new Vault({
       name: 'Consumer',
+      imports: [middle],
+    });
+
+    expect(consumer.resolve(ServiceT)).toBe('produced');
+  });
+
+  it('allows a global middle module to re-export an imported token', () => {
+    const ServiceT = token<string>('GlobalReExportService');
+
+    const producer = new Vault({
+      name: 'GlobalReExportProducer',
+      providers: [{ provide: ServiceT, useValue: 'produced' }],
+      exports: [ServiceT],
+    });
+    const middle = new Vault({
+      name: 'GlobalReExportMiddle',
+      imports: [producer],
+      exports: [ServiceT],
+      global: true,
+    });
+    const consumer = new Vault({
+      name: 'GlobalReExportConsumer',
       imports: [middle],
     });
 
@@ -166,7 +210,96 @@ describe('Module re-export of imported tokens', () => {
 });
 
 // ---------------------------------------------------------------------------
-// 3. Disposal precedence: dispose() wins over close()
+// 3. Undefined provider values
+// ---------------------------------------------------------------------------
+
+describe('Undefined provider values', () => {
+  it('treats undefined as a resolved value in local and imported dependency graphs', async () => {
+    const UndefinedT = token<undefined>('UndefinedValue');
+    const LocalConsumerT = token<undefined>('UndefinedLocalConsumer');
+    const ImportedConsumerT = token<undefined>('UndefinedImportedConsumer');
+
+    const producer = new Vault({
+      providers: [{ provide: UndefinedT, useValue: undefined }],
+      exports: [UndefinedT],
+    });
+    const consumer = new Vault({
+      imports: [producer],
+      providers: [
+        {
+          provide: ImportedConsumerT,
+          useFactory: (value: unknown) => value as undefined,
+          deps: [UndefinedT],
+        },
+      ],
+    });
+    const local = new Vault({
+      providers: [
+        { provide: UndefinedT, useValue: undefined },
+        {
+          provide: LocalConsumerT,
+          useFactory: (value: unknown) => value as undefined,
+          deps: [UndefinedT],
+        },
+      ],
+    });
+
+    await expect(local.resolveAsync(LocalConsumerT)).resolves.toBeUndefined();
+    await expect(consumer.resolveAsync(UndefinedT)).resolves.toBeUndefined();
+    await expect(consumer.resolveAsync(ImportedConsumerT)).resolves.toBeUndefined();
+    expect(local.resolve(LocalConsumerT)).toBeUndefined();
+    expect(consumer.resolve(UndefinedT)).toBeUndefined();
+    expect(consumer.resolve(ImportedConsumerT)).toBeUndefined();
+    expect(local.getSingletons().has(UndefinedT.id)).toBe(true);
+  });
+
+  it('recreates undefined-returning factories after clear while retaining value providers', () => {
+    const FactoryT = token<undefined>('UndefinedFactory');
+    const ValueT = token<undefined>('UndefinedValueAfterClear');
+    let calls = 0;
+    const vault = new Vault({
+      providers: [
+        { provide: ValueT, useValue: undefined },
+        {
+          provide: FactoryT,
+          useFactory: () => {
+            calls++;
+            return undefined;
+          },
+        },
+      ],
+    });
+
+    expect(vault.resolve(FactoryT)).toBeUndefined();
+    vault.clear();
+    expect(vault.resolve(ValueT)).toBeUndefined();
+    expect(vault.resolve(FactoryT)).toBeUndefined();
+    expect(calls).toBe(2);
+  });
+
+  it('allows an undefined scope override to satisfy a nested dependency', () => {
+    const ValueT = token<string | undefined>('UndefinedScopeValue');
+    const ConsumerT = token<string | undefined>('UndefinedScopeConsumer');
+    const vault = new Vault({
+      providers: [
+        { provide: ValueT, useValue: 'module' },
+        {
+          provide: ConsumerT,
+          lifecycle: Lifecycle.Transient,
+          useFactory: (value: unknown) => value as string | undefined,
+          deps: [ValueT],
+        },
+      ],
+    });
+    const scope = vault.createScope();
+    scope.provide(ValueT, undefined);
+
+    expect(scope.resolve(ConsumerT)).toBeUndefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 4. Disposal precedence: dispose() wins over close()
 // ---------------------------------------------------------------------------
 
 describe('Disposal method precedence', () => {
@@ -243,6 +376,31 @@ describe('Disposal method precedence', () => {
 // ---------------------------------------------------------------------------
 
 describe('Circular dependency chain diagnostics', () => {
+  it('cleans the resolution path after a synchronous factory failure', () => {
+    const Failing = token('PathCleanupFailing');
+    const Root = token('PathCleanupRoot');
+    const vault = new Vault({
+      providers: [
+        {
+          provide: Failing,
+          lifecycle: Lifecycle.Transient,
+          useFactory: () => {
+            throw new Error('fail');
+          },
+        },
+        {
+          provide: Root,
+          lifecycle: Lifecycle.Transient,
+          deps: [Failing],
+          useFactory: () => 'never',
+        },
+      ],
+    });
+
+    expect(() => vault.resolve(Root)).toThrow('Factory execution failed');
+    expect(() => vault.resolve(Root)).toThrow('Factory execution failed');
+  });
+
   it('factory cycle error contains every token in the cycle', () => {
     const AT = token<unknown>('CycleChainA');
     const BT = token<unknown>('CycleChainB');
@@ -264,10 +422,40 @@ describe('Circular dependency chain diagnostics', () => {
     }
 
     expect(err).toBeInstanceOf(CircularDependencyError);
-    const cycle = err!.cycle.join(' → ');
-    expect(cycle).toContain('CycleChainA');
-    expect(cycle).toContain('CycleChainB');
-    expect(cycle).toContain('CycleChainC');
+    expect(err!.cycle).toEqual([
+      `CycleChainA [${AT.id}]`,
+      `CycleChainB [${BT.id}]`,
+      `CycleChainC [${CT.id}]`,
+      `CycleChainA [${AT.id}]`,
+    ]);
+  });
+
+  it('async factory cycle retains the exact ordered trace', async () => {
+    const AT = token<unknown>('AsyncCycleChainA');
+    const BT = token<unknown>('AsyncCycleChainB');
+    const CT = token<unknown>('AsyncCycleChainC');
+    const vault = new Vault({
+      providers: [
+        { provide: AT, useFactory: async (_b: unknown) => 'a', deps: [BT] },
+        { provide: BT, useFactory: async (_c: unknown) => 'b', deps: [CT] },
+        { provide: CT, useFactory: async (_a: unknown) => 'c', deps: [AT] },
+      ],
+    });
+
+    let error: unknown;
+    try {
+      await vault.resolveAsync(AT);
+    } catch (caught) {
+      error = caught;
+    }
+
+    expect(error).toBeInstanceOf(CircularDependencyError);
+    expect((error as CircularDependencyError).cycle).toEqual([
+      `AsyncCycleChainA [${AT.id}]`,
+      `AsyncCycleChainB [${BT.id}]`,
+      `AsyncCycleChainC [${CT.id}]`,
+      `AsyncCycleChainA [${AT.id}]`,
+    ]);
   });
 
   it('class provider cycle error contains every class name in the cycle', () => {
@@ -294,8 +482,11 @@ describe('Circular dependency chain diagnostics', () => {
     }
 
     expect(err).toBeInstanceOf(CircularDependencyError);
-    expect(err!.cycle.join(' → ')).toMatch(/ClassCycleA|ClassCycleB/);
-    expect(err!.cycle.length).toBeGreaterThanOrEqual(3);
+    expect(err!.cycle).toEqual([
+      `ClassCycleA [${AT.id}]`,
+      `ClassCycleB [${BT.id}]`,
+      `ClassCycleA [${AT.id}]`,
+    ]);
   });
 
   it('cross-module cycle error is reported with the full cross-vault chain', () => {
@@ -320,7 +511,19 @@ describe('Circular dependency chain diagnostics', () => {
       shadowPolicy: 'allow',
     });
 
-    expect(() => root.resolve(BT)).toThrow(CircularDependencyError);
+    let error: unknown;
+    try {
+      root.resolve(BT);
+    } catch (caught) {
+      error = caught;
+    }
+
+    expect(error).toBeInstanceOf(CircularDependencyError);
+    expect((error as CircularDependencyError).cycle).toEqual([
+      BT.id,
+      `CrossModuleCycleA [${AT.id}]`,
+      BT.id,
+    ]);
   });
 });
 
@@ -484,6 +687,26 @@ describe('canResolve() cross-vault cycle detection', () => {
     expect(root.has(BT)).toBe(true);
     expect(() => root.canResolve(BT)).not.toThrow();
     expect(root.canResolve(BT)).toBe(false);
+
+    const internal = root as unknown as {
+      _validateResolvableGraph(
+        canonical: typeof BT.id,
+        path: ResolutionPath,
+        isRoot: boolean
+      ): void;
+    };
+    let diagnostic: unknown;
+    try {
+      internal._validateResolvableGraph(BT.id, new ResolutionPath(), true);
+    } catch (caught) {
+      diagnostic = caught;
+    }
+    expect(diagnostic).toBeInstanceOf(CircularDependencyError);
+    expect((diagnostic as CircularDependencyError).cycle).toEqual([
+      BT.id,
+      `CanResolveCrossVaultCycleA [${AT.id}]`,
+      BT.id,
+    ]);
   });
 });
 

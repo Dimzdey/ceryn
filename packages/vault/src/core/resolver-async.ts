@@ -8,7 +8,7 @@
  *    underlying creation (caller detached cancellation).
  *  - Delegate actual materialization to `Activator.instantiateAsync` which
  *    enforces factory rules and supports async factories.
- *  - Detect circular dependencies using the provided `stack` and throw a
+ *  - Detect circular dependencies using the provided path and throw a
  *    `CircularDependencyError` containing a helpful trace.
  *
  * Lifecycle handling:
@@ -29,11 +29,15 @@
  *    throws, `entry.promise` is cleared to allow retrying.
  *  - Scoped entries create a shallow copy to avoid mutating shared Entry metadata.
  *  - AbortSignal is only passed to transient instantiation and individual waiters,
- *    not to the shared singleton creation (prevents one caller's abort from
- *    cancelling another caller's singleton).
+ *    not to shared singleton or scoped creation (prevents one caller's abort from
+ *    cancelling creation used by another caller).
  */
 
-import { CircularDependencyError, ScopedWithoutScopeError } from '../errors/errors.js';
+import {
+  CircularDependencyError,
+  ScopeDisposedError,
+  ScopedWithoutScopeError,
+} from '../errors/errors.js';
 import type { Disposable } from '../types/index.js';
 import type { Activator } from './activator.js';
 import {
@@ -43,6 +47,7 @@ import {
   LIFECYCLE_SCOPED,
   LIFECYCLE_SINGLETON,
 } from './flags.js';
+import type { ResolutionPath } from './resolution-path.js';
 import type { Scope } from './scope.js';
 import type { CanonicalId } from './token.js';
 import type { Vault } from './vault.js';
@@ -74,14 +79,10 @@ function abortAsPromise(signal?: AbortSignal) {
   };
 }
 
-async function raceWithAbort<T>(promise: Promise<T>, signal?: AbortSignal): Promise<T> {
+function raceWithAbort<T>(promise: Promise<T>, signal?: AbortSignal): Promise<T> {
+  if (!signal) return promise;
   const abortP = abortAsPromise(signal);
-  if (!abortP) return promise;
-  try {
-    return await Promise.race([promise, abortP.promise]);
-  } finally {
-    abortP.cleanup();
-  }
+  return Promise.race([promise, abortP!.promise]).finally(abortP!.cleanup);
 }
 
 /**
@@ -108,6 +109,11 @@ export class ResolverAsync {
     private readonly activator: Activator
   ) {}
 
+  /** Wait for shared creation, avoiding abort-race allocation without a signal. */
+  waitFor<T>(promise: Promise<T>, signal?: AbortSignal): Promise<T> {
+    return raceWithAbort(promise, signal);
+  }
+
   /**
    * Resolve a canonical token asynchronously.
    *
@@ -129,47 +135,52 @@ export class ResolverAsync {
    *  - Promise deduplication prevents concurrent singleton instantiations
    *
    * @param canonical - Canonical token ID to resolve
-   * @param stack - Dependency stack for cycle detection (mutated during traversal)
+   * @param path - Dependency path for cycle detection (mutated during traversal)
    * @param signal - Optional AbortSignal for caller-specific cancellation
    * @param scope - Optional scope for scoped lifecycle instances
+   * @param boundaryAlreadyValidated - Skip this entry's lifecycle check after cross-vault validation
    * @returns Resolved instance of type T
    */
   async fromEntry<T>(
     canonical: CanonicalId,
-    stack: CanonicalId[],
+    path: ResolutionPath,
     signal?: AbortSignal,
-    scope?: Scope
+    scope?: Scope,
+    boundaryAlreadyValidated = false
   ): Promise<T> {
     const entry = this.vault.store.getByCanonical(canonical);
-    if (!entry) throw this.vault.buildNotFoundError(canonical, stack);
+    if (!entry) throw this.vault.buildNotFoundError(canonical, path.tokens);
 
     // Detect cycles and produce a helpful cycle trace for diagnostics
-    if (stack.includes(canonical)) {
-      const cycle = stack.slice(stack.indexOf(canonical)).concat(canonical);
-      throw new CircularDependencyError(cycle.map((t) => this.vault.describeToken(t)));
+    if (!path.tryEnter(canonical)) {
+      throw new CircularDependencyError(
+        path.cycle(canonical).map((t) => this.vault.describeToken(t))
+      );
     }
 
-    stack.push(canonical);
     try {
       // Extract lifecycle bits once for multiple checks (performance optimization)
       const lifecycleFlags = entry.flags & LIFECYCLE_MASK;
 
       // Validate lifecycle rules at resolution time (catches order-independent violations)
-      this.vault._validateLifecycleRules(canonical, stack);
+      if (!boundaryAlreadyValidated) this.vault._validateLifecycleRules(canonical, path);
 
       // Singleton lifecycle: Share promise across concurrent requests
       // Lifecycle check: bits 0-1 are 0b00 (LIFECYCLE_SINGLETON)
       if (lifecycleFlags === LIFECYCLE_SINGLETON) {
         // Fast path: hot singleton instance already materialized
-        if (entry.flags & FLAG_HAS_INSTANCE) return entry.instance as T;
+        if (entry.flags & FLAG_HAS_INSTANCE) {
+          this.vault.cache.primeAll(entry.token, entry);
+          return entry.instance as T;
+        }
 
         // Kick off shared creation only once (promise deduplication)
         if (!entry.promise) {
           // Important: decouple underlying creation from caller's signal so the
           // shared creation continues even if an individual waiter aborts.
-          const creationStack = stack.slice();
+          const creationPath = path.fork();
           entry.promise = Promise.resolve()
-            .then(() => this.activator.instantiateAsync(entry, creationStack /* no signal */))
+            .then(() => this.activator.instantiateAsync(entry, creationPath /* no signal */))
             .then((value) => {
               entry.instance = value;
               entry.flags |= FLAG_HAS_INSTANCE;
@@ -198,54 +209,76 @@ export class ResolverAsync {
         // Validate: Scoped lifecycle requires scope parameter
         // Performance: Single check before instantiation
         if (!scope) {
-          const chain = stack.map((id) => this.vault.describeToken(id));
+          const chain = path.tokens.map((id) => this.vault.describeToken(id));
           throw new ScopedWithoutScopeError(entry.token, chain);
         }
 
-        // Scoped cache check: return cached instance if available in scope
-        const cached = scope.cache.get(entry.token);
-        if (cached && cached.flags & FLAG_HAS_INSTANCE) {
-          return cached.instance as T;
+        // The scope cache stores both completed instances and in-flight creation.
+        // This provides the same deduplication guarantee as singleton resolution.
+        let scopedEntry = scope.cache.get(entry.token);
+        if (scopedEntry && scopedEntry.flags & FLAG_HAS_INSTANCE) {
+          return scopedEntry.instance as T;
         }
 
-        // Instantiate via Activator. This enforces factory rules and supports async factories.
-        const value = await this.activator.instantiateAsync(entry, stack, signal, scope);
-
-        // Scoped: Store in scope-specific cache and register cleanup
-        // Note: Create shallow copy to avoid mutating the shared Entry metadata
-        const scopedEntry = {
-          ...entry,
-          instance: value,
-          flags: entry.flags | FLAG_HAS_INSTANCE,
-        };
-        // Prime scope cache with canonical token and all aliases
-        scope.cache.primeAll(entry.token, scopedEntry);
-
-        // Auto-register cleanup: if instance has dispose() or close(), call on scope.dispose()
-        if (
-          value &&
-          entry.flags & FLAG_OWNS_INSTANCE &&
-          (typeof value === 'object' || typeof value === 'function') &&
-          (typeof (value as Disposable).dispose === 'function' ||
-            typeof (value as Disposable).close === 'function')
-        ) {
-          scope.registerDisposer(() => {
-            const disposer = (value as Disposable).dispose ?? (value as Disposable).close;
-            return disposer.call(value);
-          });
+        if (!scopedEntry) {
+          scopedEntry = {
+            ...entry,
+            instance: undefined,
+            promise: undefined,
+            flags: entry.flags & ~FLAG_HAS_INSTANCE,
+          };
+          scope.cache.primeAll(entry.token, scopedEntry);
         }
 
-        return value as T;
+        if (!scopedEntry.promise) {
+          const creationPath = path.fork();
+          let createdValue: unknown;
+          let creationSucceeded = false;
+          const creationPromise = Promise.resolve()
+            .then(() => this.activator.instantiateAsync(entry, creationPath, undefined, scope))
+            .then((value) => {
+              createdValue = value;
+              creationSucceeded = true;
+              scopedEntry.instance = value;
+              scopedEntry.flags |= FLAG_HAS_INSTANCE;
+              scopedEntry.promise = undefined;
+              return value;
+            })
+            .catch((error) => {
+              scopedEntry.promise = undefined;
+              throw error;
+            });
+
+          scopedEntry.promise = creationPromise;
+
+          if (entry.flags & FLAG_OWNS_INSTANCE) {
+            const disposeValue = (value: unknown): void | Promise<void> => {
+              if (value && (typeof value === 'object' || typeof value === 'function')) {
+                const disposer = (value as Disposable).dispose ?? (value as Disposable).close;
+                if (typeof disposer === 'function') return disposer.call(value);
+              }
+            };
+
+            scope.registerDisposer(() => {
+              if (creationSucceeded) return disposeValue(createdValue);
+              return creationPromise.then(disposeValue, () => undefined);
+            });
+          }
+        }
+
+        const value = await raceWithAbort(scopedEntry.promise as Promise<T>, signal);
+        if (scope.isDisposed) throw new ScopeDisposedError();
+        return value;
       }
 
       // Transient lifecycle: Fresh instance every time, no caching
       // Each caller triggers a fresh instantiation which honors the caller's AbortSignal directly.
       const p = Promise.resolve().then(() =>
-        this.activator.instantiateAsync(entry, stack, signal, scope)
+        this.activator.instantiateAsync(entry, path, signal, scope)
       );
       return await raceWithAbort(p as Promise<T>, signal);
     } finally {
-      stack.pop();
+      path.leave(canonical);
     }
   }
 }

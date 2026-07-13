@@ -5,16 +5,19 @@
  * Notes:
  * - Uses only constructs supported by all libs under test: singletons, transients,
  *   scoped containers (child/container-of), factory providers, and token-based injection.
- * - Measures: cold boot, first request, warm steady-state, burst, bridge/aether hop.
- * - Reports latency per request (ns/op), cold-start ms, and heap deltas.
+ * - Measures fresh container work in a warm process, steady-state, burst, and bridge hops.
+ * - Reports batch and per-operation latency with sample-aware percentile context.
  */
 
+import { existsSync, readFileSync, writeFileSync } from 'node:fs';
+import { cpus } from 'node:os';
+import { resolve } from 'node:path';
 import 'reflect-metadata';
-import { Bench } from 'tinybench';
+import { Bench, type Fn, type FnOptions } from 'tinybench';
 import v8 from 'v8';
 
-import { Container, Injectable, Inject, Module, Lifecycle } from '../src/index.js';
 import { token } from '../src/core/token.js';
+import { Container, Inject, Injectable, Lifecycle, Module } from '../src/index.js';
 import { MetadataRegistry } from '../src/registry/index.js';
 
 import {
@@ -25,77 +28,34 @@ import {
   type DependencyContainer,
 } from 'tsyringe';
 
-import { Container as Inversify, injectable as invInjectable } from 'inversify';
-import { Container as TypeDIContainer, Token as TypeDIToken } from 'typedi';
 import { Container as Needle } from '@needle-di/core';
-
-// ╭──────────────────────────────────────────────────────────────────────────╮
-// │ Percentile Calculation Utilities                                         │
-// ╰──────────────────────────────────────────────────────────────────────────╯
-
-interface PercentileStats {
-  min: number;
-  max: number;
-  mean: number;
-  p50: number;
-  p90: number;
-  p95: number;
-  p99: number;
-  p999: number;
-  stddev: number;
-  samples: number;
-}
-
-function calculatePercentiles(samples: number[]): PercentileStats {
-  if (samples.length === 0) {
-    return {
-      min: 0,
-      max: 0,
-      mean: 0,
-      p50: 0,
-      p90: 0,
-      p95: 0,
-      p99: 0,
-      p999: 0,
-      stddev: 0,
-      samples: 0,
-    };
-  }
-
-  const sorted = [...samples].sort((a, b) => a - b);
-  const n = sorted.length;
-
-  const percentile = (p: number): number => {
-    const index = Math.ceil((n * p) / 100) - 1;
-    return sorted[Math.max(0, Math.min(index, n - 1))];
-  };
-
-  const sum = sorted.reduce((acc, val) => acc + val, 0);
-  const mean = sum / n;
-
-  const squaredDiffs = sorted.map((val) => Math.pow(val - mean, 2));
-  const variance = squaredDiffs.reduce((acc, val) => acc + val, 0) / n;
-  const stddev = Math.sqrt(variance);
-
-  return {
-    min: sorted[0],
-    max: sorted[n - 1],
-    mean,
-    p50: percentile(50),
-    p90: percentile(90),
-    p95: percentile(95),
-    p99: percentile(99),
-    p999: percentile(99.9),
-    stddev,
-    samples: n,
-  };
-}
+import {
+  Container as Inversify,
+  inject as invInject,
+  injectable as invInjectable,
+} from 'inversify';
+import {
+  Container as TypeDIContainer,
+  Token as TypeDIToken,
+  type ContainerInstance as TypeDIContainerInstance,
+} from 'typedi';
+import {
+  calculatePercentiles,
+  deterministicShuffle,
+  logarithmicHistogram,
+  percentileEligibility,
+} from './lib/statistics.mjs';
 
 function formatNs(ns: number): string {
   if (ns >= 1_000_000_000) return `${(ns / 1_000_000_000).toFixed(2)}s`;
   if (ns >= 1_000_000) return `${(ns / 1_000_000).toFixed(2)}ms`;
   if (ns >= 1_000) return `${(ns / 1_000).toFixed(2)}μs`;
   return `${ns.toFixed(0)}ns`;
+}
+
+function positiveEnv(name: string, fallback: number): number {
+  const value = Number.parseInt(process.env[name] ?? '', 10);
+  return Number.isFinite(value) && value > 0 ? value : fallback;
 }
 
 // ╭──────────────────────────────────────────────────────────────────────────╮
@@ -114,7 +74,7 @@ interface Adapter {
   bridgeCycle(reqs: number): Promise<void> | void;
   scopedCycle?(reqs: number): Promise<void> | void;
   asyncFactoryCycle?(reqs: number): Promise<void> | void;
-  heap(): number;
+  release(): Promise<void> | void;
 }
 
 function* endpointStream(seed = 1337): Generator<Endpoint> {
@@ -315,7 +275,6 @@ function buildCerynAdapter(): Adapter {
   }
 
   const allRelics = [
-    Logger,
     Database,
     Cache,
     UserRepo,
@@ -360,6 +319,13 @@ function buildCerynAdapter(): Adapter {
   const AsyncDbT = token<{ connection: string }>('AsyncDb');
 
   @Module({
+    providers: [Logger],
+    exports: [LoggerT],
+    name: 'BenchmarkCoreModule',
+  })
+  class CoreModule {}
+
+  @Module({
     providers: [
       ...allRelics,
       ScopedService,
@@ -372,8 +338,9 @@ function buildCerynAdapter(): Adapter {
         lifecycle: Lifecycle.Singleton,
       },
     ],
-    exports: [...Object.values(CtrlT), LoggerT, ScopedServiceT, AsyncDbT],
-    shadowPolicy: 'allow',
+    imports: [CoreModule],
+    exports: [...Object.values(CtrlT), ScopedServiceT, AsyncDbT],
+    name: 'BenchmarkAppModule',
   })
   class FullAppVault {}
 
@@ -386,8 +353,8 @@ function buildCerynAdapter(): Adapter {
   return {
     name: 'Ceryn',
     coldBoot() {
+      Container.clearCache();
       cold = buildVault();
-      warm = null;
     },
     firstRequest() {
       const g = cold ?? buildVault();
@@ -429,8 +396,10 @@ function buildCerynAdapter(): Adapter {
         await g.resolveAsync(AsyncDbT);
       }
     },
-    heap() {
-      return process.memoryUsage().heapUsed;
+    release() {
+      cold = null;
+      warm = null;
+      Container.clearCache();
     },
   };
 }
@@ -448,10 +417,15 @@ function buildTsyringeAdapter(): Adapter {
   const Repo = Object.fromEntries(ENDPOINTS.map((e) => [e, Symbol(`Repo:${e}`)])) as any;
   const Svc = Object.fromEntries(ENDPOINTS.map((e) => [e, Symbol(`Svc:${e}`)])) as any;
   const Ctrl = Object.fromEntries(ENDPOINTS.map((e) => [e, Symbol(`Ctrl:${e}`)])) as any;
+  const RequestIdT = Symbol('RequestId');
+  const ScopedServiceT = Symbol('ScopedService');
+  const AsyncDbT = Symbol('AsyncDb');
 
   @tsyringeInjectable()
   class DB {
+    constructor(@inject(TOK.Logger) private readonly logger: Logger) {}
     query(e: Endpoint) {
+      this.logger.log('Query');
       return `db:${e}`;
     }
   }
@@ -496,18 +470,33 @@ function buildTsyringeAdapter(): Adapter {
     return { EndpointRepo, EndpointSvc, EndpointCtrl };
   };
 
+  const endpointClasses = Object.fromEntries(
+    ENDPOINTS.map((endpoint) => [endpoint, buildEndpointClasses(endpoint)])
+  ) as Record<Endpoint, ReturnType<typeof buildEndpointClasses>>;
+
+  @tsyringeInjectable()
+  class ScopedService {
+    constructor(@inject(RequestIdT) public readonly id: string) {}
+  }
+
   const buildRoot = (): DependencyContainer => {
-    const container = tsyringe.createChildContainer();
+    const core = tsyringe.createChildContainer();
+    core.register(TOK.Logger, { useClass: Logger }, { lifecycle: TsyringeLifecycle.Singleton });
+
+    const container = core.createChildContainer();
     container.register(TOK.DB, { useClass: DB }, { lifecycle: TsyringeLifecycle.Singleton });
     container.register(TOK.Cache, { useClass: Cache }, { lifecycle: TsyringeLifecycle.Singleton });
     container.register(
-      TOK.Logger,
-      { useClass: Logger },
-      { lifecycle: TsyringeLifecycle.Singleton }
+      ScopedServiceT,
+      { useClass: ScopedService },
+      { lifecycle: TsyringeLifecycle.ContainerScoped }
     );
+    container.register(AsyncDbT, {
+      useFactory: () => Promise.resolve({ connection: 'pg://localhost/bench' }),
+    });
 
     for (const e of ENDPOINTS) {
-      const { EndpointRepo, EndpointSvc, EndpointCtrl } = buildEndpointClasses(e);
+      const { EndpointRepo, EndpointSvc, EndpointCtrl } = endpointClasses[e];
       container.register(
         Repo[e],
         { useClass: EndpointRepo },
@@ -536,7 +525,6 @@ function buildTsyringeAdapter(): Adapter {
     name: 'Tsyringe',
     coldBoot() {
       coldRoot = buildRoot();
-      sharedRoot = null;
     },
     firstRequest() {
       const root = coldRoot ?? (coldRoot = buildRoot());
@@ -567,13 +555,14 @@ function buildTsyringeAdapter(): Adapter {
       const root = ensureSharedRoot();
       for (let i = 0; i < n; i++) {
         const child = root.createChildContainer();
-        child.register('RequestId', { useValue: `req-${i}` });
-        child.resolve<any>(TOK.Logger); // resolve something from child
+        child.registerInstance(RequestIdT, `req-${i}`);
+        void child.resolve<ScopedService>(ScopedServiceT).id;
         child.reset();
       }
     },
-    heap() {
-      return process.memoryUsage().heapUsed;
+    release() {
+      coldRoot = null;
+      sharedRoot = null;
     },
   };
 }
@@ -600,10 +589,15 @@ function buildInversifyAdapter(): Adapter {
     Endpoint,
     symbol
   >;
+  const RequestIdT = Symbol('RequestId');
+  const ScopedServiceT = Symbol('ScopedService');
+  const AsyncDbT = Symbol('AsyncDb');
 
   @invInjectable()
   class DB {
+    constructor(@invInject(TOK.Logger) private readonly logger: Logger) {}
     query(e: Endpoint) {
+      this.logger.log('Query');
       return `db:${e}`;
     }
   }
@@ -621,10 +615,19 @@ function buildInversifyAdapter(): Adapter {
   }
 
   const buildRoot = () => {
-    const container = new Inversify({ defaultScope: 'Transient' });
+    const core = new Inversify({ defaultScope: 'Transient' });
+    core.bind(TOK.Logger).to(Logger).inSingletonScope();
+
+    const container = new Inversify({ defaultScope: 'Transient', parent: core });
     container.bind(TOK.DB).to(DB).inSingletonScope();
     container.bind(TOK.Cache).to(Cache).inSingletonScope();
-    container.bind(TOK.Logger).to(Logger).inSingletonScope();
+    container
+      .bind<{ id: string }>(ScopedServiceT)
+      .toDynamicValue((context) => ({ id: context.get<string>(RequestIdT) }));
+    container
+      .bind<{ connection: string }>(AsyncDbT)
+      .toDynamicValue(async () => ({ connection: 'pg://localhost/bench' }))
+      .inSingletonScope();
 
     for (const e of ENDPOINTS) {
       container
@@ -652,7 +655,6 @@ function buildInversifyAdapter(): Adapter {
     name: 'Inversify',
     coldBoot() {
       coldRoot = buildRoot();
-      sharedRoot = null;
     },
     firstRequest() {
       const root = coldRoot ?? (coldRoot = buildRoot());
@@ -679,8 +681,23 @@ function buildInversifyAdapter(): Adapter {
         root.get<Logger>(TOK.Logger);
       }
     },
-    heap() {
-      return process.memoryUsage().heapUsed;
+    scopedCycle(n) {
+      const root = ensureSharedRoot();
+      for (let i = 0; i < n; i++) {
+        const child = new Inversify({ parent: root });
+        child.bind(RequestIdT).toConstantValue(`req-${i}`);
+        void child.get<{ id: string }>(ScopedServiceT).id;
+      }
+    },
+    async asyncFactoryCycle(n) {
+      const root = ensureSharedRoot();
+      for (let i = 0; i < n; i++) {
+        await root.getAsync<{ connection: string }>(AsyncDbT);
+      }
+    },
+    release() {
+      coldRoot = null;
+      sharedRoot = null;
     },
   };
 }
@@ -704,9 +721,14 @@ function buildTypeDIAdapter(): Adapter {
   const Ctrl = Object.fromEntries(
     ENDPOINTS.map((e) => [e, new TypeDIToken<any>(`Ctrl:${e}`)])
   ) as any;
+  const RequestIdT = new TypeDIToken<string>('RequestId');
+  const ScopedServiceT = new TypeDIToken<{ id: string }>('ScopedService');
+  const AsyncDbT = new TypeDIToken<Promise<{ connection: string }>>('AsyncDb');
 
   class DB {
+    constructor(private readonly logger: Logger) {}
     query(e: Endpoint) {
+      this.logger.log('Query');
       return `db:${e}`;
     }
   }
@@ -721,90 +743,120 @@ function buildTypeDIAdapter(): Adapter {
     }
   }
 
-  const configureRoot = () => {
-    TypeDIContainer.reset();
+  let scopeCounter = 0;
+
+  const configureRoot = (): TypeDIContainerInstance => {
+    TypeDIContainer.reset('bench-app');
+    TypeDIContainer.of().reset({ strategy: 'resetServices' });
 
     const services: any[] = [
-      { id: TOK.DB, value: new DB(), global: true },
-      { id: TOK.Cache, value: new Cache(), global: true },
       { id: TOK.Logger, value: new Logger(), global: true },
+      {
+        id: TOK.DB,
+        factory: (container: TypeDIContainerInstance) => new DB(container.get<Logger>(TOK.Logger)),
+        global: true,
+      },
+      { id: TOK.Cache, value: new Cache(), global: true },
+      {
+        id: AsyncDbT,
+        factory: () => Promise.resolve({ connection: 'pg://localhost/bench' }),
+        global: true,
+      },
     ];
 
     for (const e of ENDPOINTS) {
       services.push({
         id: Repo[e],
-        factory: () => ({ fetch: () => TypeDIContainer.get<DB>(TOK.DB).query(e) }),
+        factory: (container: TypeDIContainerInstance) => ({
+          fetch: () => container.get<DB>(TOK.DB).query(e),
+        }),
         global: true,
       });
       services.push({
         id: Svc[e],
-        factory: () => ({ run: () => TypeDIContainer.get<RepoAPI>(Repo[e]).fetch() }),
+        factory: (container: TypeDIContainerInstance) => ({
+          run: () => container.get<RepoAPI>(Repo[e]).fetch(),
+        }),
         global: true,
       });
       services.push({
         id: Ctrl[e],
-        factory: () => ({ handle: () => TypeDIContainer.get<SvcAPI>(Svc[e]).run() }),
+        factory: (container: TypeDIContainerInstance) => ({
+          handle: () => container.get<SvcAPI>(Svc[e]).run(),
+        }),
         global: true,
       });
     }
 
     TypeDIContainer.set(services);
+    const root = TypeDIContainer.of('bench-app');
+    root.set({
+      id: ScopedServiceT,
+      factory: (container: TypeDIContainerInstance) => ({
+        id: container.get(RequestIdT),
+      }),
+      global: false,
+    });
+    return root;
   };
 
   const epGen = endpointStream();
-  let coldReady = false;
-  let sharedReady = false;
+  let coldRoot: TypeDIContainerInstance | null = null;
+  let sharedRoot: TypeDIContainerInstance | null = null;
+  const ensureSharedRoot = () => sharedRoot ?? (sharedRoot = configureRoot());
 
   return {
     name: 'TypeDI',
     coldBoot() {
-      configureRoot();
-      coldReady = true;
-      sharedReady = false;
+      coldRoot = configureRoot();
     },
     firstRequest() {
-      if (!coldReady) {
-        configureRoot();
-        coldReady = true;
-        sharedReady = false;
-      }
+      const root = coldRoot ?? (coldRoot = configureRoot());
       const e = epGen.next().value;
-      (TypeDIContainer.get(Ctrl[e]) as any).handle();
+      (root.get(Ctrl[e]) as CtrlAPI).handle();
     },
     warmup(n) {
-      if (!sharedReady) {
-        configureRoot();
-        sharedReady = true;
-        coldReady = false;
-      }
+      const root = ensureSharedRoot();
       for (let i = 0; i < n; i++) {
         const e = epGen.next().value;
-        (TypeDIContainer.get(Ctrl[e]) as any).handle();
+        (root.get(Ctrl[e]) as CtrlAPI).handle();
       }
     },
     requestCycle(n) {
-      if (!sharedReady) {
-        configureRoot();
-        sharedReady = true;
-        coldReady = false;
-      }
+      const root = ensureSharedRoot();
       for (let i = 0; i < n; i++) {
         const e = epGen.next().value;
-        (TypeDIContainer.get(Ctrl[e]) as any).handle();
+        (root.get(Ctrl[e]) as CtrlAPI).handle();
       }
     },
     bridgeCycle(n) {
-      if (!sharedReady) {
-        configureRoot();
-        sharedReady = true;
-        coldReady = false;
-      }
+      const root = ensureSharedRoot();
       for (let i = 0; i < n; i++) {
-        TypeDIContainer.get(TOK.Logger);
+        root.get(TOK.Logger);
       }
     },
-    heap() {
-      return process.memoryUsage().heapUsed;
+    scopedCycle(n) {
+      void ensureSharedRoot();
+      for (let i = 0; i < n; i++) {
+        const scopeId = `bench-scope-${++scopeCounter}`;
+        const scope = TypeDIContainer.of(scopeId);
+        scope.set(RequestIdT, `req-${i}`);
+        scope.set({
+          id: ScopedServiceT,
+          factory: (container: TypeDIContainerInstance) => ({
+            id: container.get(RequestIdT),
+          }),
+          global: false,
+        });
+        void scope.get(ScopedServiceT).id;
+        TypeDIContainer.reset(scopeId);
+      }
+    },
+    release() {
+      coldRoot = null;
+      sharedRoot = null;
+      TypeDIContainer.reset('bench-app');
+      TypeDIContainer.of().reset({ strategy: 'resetServices' });
     },
   };
 }
@@ -814,7 +866,14 @@ function buildTypeDIAdapter(): Adapter {
 // ╰──────────────────────────────────────────────────────────────────────────╯
 
 function buildNeedleAdapter(): Adapter {
-  const TOK = { DB: 'DB', Cache: 'Cache', Logger: 'Logger' } as const;
+  const TOK = {
+    DB: 'DB',
+    Cache: 'Cache',
+    Logger: 'Logger',
+    RequestId: 'RequestId',
+    ScopedService: 'ScopedService',
+    AsyncDb: 'AsyncDb',
+  } as const;
   const Repo: Record<Endpoint, string> = Object.fromEntries(
     ENDPOINTS.map((e) => [e, `Repo:${e}`])
   ) as any;
@@ -824,11 +883,29 @@ function buildNeedleAdapter(): Adapter {
   const Ctrl = Object.fromEntries(ENDPOINTS.map((e) => [e, `Ctrl:${e}`])) as any;
 
   const buildRoot = () => {
-    const container = new Needle();
+    const core = new Needle();
+    core.bind({ provide: TOK.Logger, useFactory: () => ({ log: (s: string) => s }) });
+
+    const container = core.createChild();
     container.bindAll(
-      { provide: TOK.DB, useFactory: () => ({ query: (e: Endpoint) => `db:${e}` }) },
+      {
+        provide: TOK.DB,
+        useFactory: (c) => {
+          const logger = c.get(TOK.Logger) as { log: (message: string) => string };
+          return {
+            query: (e: Endpoint) => {
+              logger.log('Query');
+              return `db:${e}`;
+            },
+          };
+        },
+      },
       { provide: TOK.Cache, useFactory: () => ({ get: (k: string) => `cache:${k}` }) },
-      { provide: TOK.Logger, useFactory: () => ({ log: (s: string) => s }) }
+      {
+        provide: TOK.AsyncDb,
+        async: true,
+        useFactory: async () => ({ connection: 'pg://localhost/bench' }),
+      }
     );
 
     for (const e of ENDPOINTS) {
@@ -850,7 +927,6 @@ function buildNeedleAdapter(): Adapter {
     name: 'Needle',
     coldBoot() {
       coldRoot = buildRoot();
-      sharedRoot = null;
     },
     firstRequest() {
       const root = coldRoot ?? (coldRoot = buildRoot());
@@ -877,8 +953,30 @@ function buildNeedleAdapter(): Adapter {
         root.get(TOK.Logger);
       }
     },
-    heap() {
-      return process.memoryUsage().heapUsed;
+    scopedCycle(n) {
+      const root = ensureSharedRoot();
+      for (let i = 0; i < n; i++) {
+        const child = root.createChild();
+        child.bindAll(
+          { provide: TOK.RequestId, useValue: `req-${i}` },
+          {
+            provide: TOK.ScopedService,
+            useFactory: (container) => ({ id: container.get(TOK.RequestId) as string }),
+          }
+        );
+        void (child.get(TOK.ScopedService) as { id: string }).id;
+        child.unbindAll();
+      }
+    },
+    async asyncFactoryCycle(n) {
+      const root = ensureSharedRoot();
+      for (let i = 0; i < n; i++) {
+        await root.getAsync(TOK.AsyncDb);
+      }
+    },
+    release() {
+      coldRoot = null;
+      sharedRoot = null;
     },
   };
 }
@@ -887,14 +985,118 @@ function buildNeedleAdapter(): Adapter {
 // │ Harness                                                                 │
 // ╰──────────────────────────────────────────────────────────────────────────╯
 
-function ms(v: number) {
-  return v.toFixed(3) + ' ms';
+const PHASES = [
+  { name: 'Fresh container + first request (warm process)', batchSize: 1, unit: 'batch' },
+  { name: 'Warm 1k requests', batchSize: 1_000, unit: 'request' },
+  { name: 'Burst 10k', batchSize: 10_000, unit: 'request' },
+  { name: 'Parent lookup 5k', batchSize: 5_000, unit: 'lookup' },
+  { name: 'Scoped 1k', batchSize: 1_000, unit: 'scope' },
+  { name: 'Async cached singleton 100', batchSize: 100, unit: 'resolve' },
+] as const;
+
+async function prepareWarmAdapter(adapter: Adapter): Promise<void> {
+  await adapter.release();
+  await adapter.warmup(200);
+}
+
+async function prepareAsyncAdapter(adapter: Adapter): Promise<void> {
+  await prepareWarmAdapter(adapter);
+  await adapter.asyncFactoryCycle?.(1);
+}
+
+function packageVersions(): string | undefined {
+  try {
+    let cerynVersion = 'unknown';
+    for (const packagePath of [
+      resolve(process.cwd(), 'package.json'),
+      resolve(process.cwd(), 'packages/vault/package.json'),
+    ]) {
+      if (!existsSync(packagePath)) continue;
+      const packageJson = JSON.parse(readFileSync(packagePath, 'utf8')) as {
+        name?: string;
+        version?: string;
+      };
+      if (packageJson.name === '@ceryn/vault') {
+        cerynVersion = packageJson.version ?? 'unknown';
+        break;
+      }
+    }
+
+    const lockPath = [
+      resolve(process.cwd(), 'package-lock.json'),
+      resolve(process.cwd(), '../../package-lock.json'),
+    ].find(existsSync);
+    if (!lockPath) return undefined;
+
+    const lock = JSON.parse(readFileSync(lockPath, 'utf8')) as {
+      packages?: Record<string, { version?: string }>;
+    };
+    const packages = lock.packages ?? {};
+    const names = [
+      ['Ceryn', cerynVersion],
+      ['Tinybench', packages['node_modules/tinybench']?.version ?? 'unknown'],
+      ['Tsyringe', packages['node_modules/tsyringe']?.version ?? 'unknown'],
+      ['Inversify', packages['node_modules/inversify']?.version ?? 'unknown'],
+      ['TypeDI', packages['node_modules/typedi']?.version ?? 'unknown'],
+      ['Needle', packages['node_modules/@needle-di/core']?.version ?? 'unknown'],
+    ] as const;
+    return names.map(([label, version]) => `${label} ${version}`).join('  ');
+  } catch {
+    return undefined;
+  }
+}
+
+function profileCerynFreshContainerPath(): void {
+  const adapter = buildCerynAdapter();
+  const iterations = Number.parseInt(
+    process.env.BENCH_FRESH_ITERATIONS ?? process.env.BENCH_COLD_ITERATIONS ?? '100000',
+    10
+  );
+  const bootSamples: number[] = [];
+  const firstRequestSamples: number[] = [];
+
+  for (let i = 0; i < 2_000; i++) {
+    adapter.coldBoot();
+    adapter.firstRequest();
+  }
+
+  for (let i = 0; i < iterations; i++) {
+    const bootStart = process.hrtime.bigint();
+    adapter.coldBoot();
+    const bootEnd = process.hrtime.bigint();
+    adapter.firstRequest();
+    const requestEnd = process.hrtime.bigint();
+
+    bootSamples.push(Number(bootEnd - bootStart));
+    firstRequestSamples.push(Number(requestEnd - bootEnd));
+  }
+
+  const boot = calculatePercentiles(bootSamples);
+  const firstRequest = calculatePercentiles(firstRequestSamples);
+  console.log('=== Ceryn Fresh-Container Profile (warm process) ===');
+  console.log(`Iterations: ${iterations.toLocaleString()}`);
+  console.log(
+    `Container boot: p50 ${formatNs(boot.p50)}, p95 ${formatNs(boot.p95)}, mean ${formatNs(boot.mean)}`
+  );
+  console.log(
+    `First request: p50 ${formatNs(firstRequest.p50)}, p95 ${formatNs(firstRequest.p95)}, mean ${formatNs(firstRequest.mean)}`
+  );
 }
 
 async function main() {
-  console.log('=== Real-World DI Benchmark Suite ===');
+  if (process.env.BENCH_PROFILE === 'ceryn-cold') {
+    profileCerynFreshContainerPath();
+    return;
+  }
+
+  console.log('=== Real-World DI Warm-Process Benchmark Suite ===');
   console.log(`Node ${process.version}  ${process.platform} ${process.arch}`);
+  const cpu = cpus();
+  console.log(`CPU ${cpu[0]?.model ?? 'unknown'}  ${cpu.length} logical cores`);
   console.log(`Heap limit ~${Math.round(v8.getHeapStatistics().heap_size_limit / 1024 / 1024)} MB`);
+  const versions = packageVersions();
+  if (versions) console.log(versions);
+  console.log('Command: npm run bench -w packages/vault');
 
   const adapters: Adapter[] = [
     buildCerynAdapter(),
@@ -904,118 +1106,152 @@ async function main() {
     buildNeedleAdapter(),
   ];
 
-  const bench = new Bench({ time: 1200 });
+  const benchmarkTimeMs = positiveEnv('BENCH_TIME_MS', 1_200);
+  const warmupTimeMs = positiveEnv('BENCH_WARMUP_MS', 250);
+  const bench = new Bench({ time: benchmarkTimeMs, warmupTime: warmupTimeMs });
+  const taskSpecs: Array<{ name: string; fn: Fn; options?: FnOptions }> = [];
+  const addTask = (name: string, fn: Fn, options?: FnOptions) => {
+    taskSpecs.push({ name, fn, options });
+  };
 
   for (const a of adapters) {
-    bench.add(`${a.name}: Cold boot`, () => {
+    addTask(`${a.name}: Fresh container + first request (warm process)`, () => {
       a.coldBoot();
       a.firstRequest();
     });
   }
 
   for (const a of adapters) {
-    bench.add(`${a.name}: Warm 1k requests`, () => {
-      a.warmup(200);
-      a.requestCycle(1000);
-    });
+    addTask(
+      `${a.name}: Warm 1k requests`,
+      () => {
+        a.requestCycle(1000);
+      },
+      {
+        beforeAll: () => prepareWarmAdapter(a),
+      }
+    );
   }
 
   for (const a of adapters) {
-    bench.add(`${a.name}: Burst 10k`, () => {
-      a.requestCycle(10_000);
-    });
+    addTask(
+      `${a.name}: Burst 10k`,
+      () => {
+        a.requestCycle(10_000);
+      },
+      { beforeAll: () => prepareWarmAdapter(a) }
+    );
   }
 
   for (const a of adapters) {
-    bench.add(`${a.name}: Bridge 5k`, () => {
-      a.bridgeCycle(5_000);
-    });
+    addTask(
+      `${a.name}: Parent lookup 5k`,
+      () => {
+        a.bridgeCycle(5_000);
+      },
+      { beforeAll: () => prepareWarmAdapter(a) }
+    );
   }
 
-  // Scoped lifecycle: create/resolve/dispose per iteration (only adapters that support it)
+  // Scoped lifecycle: create child/scope, provide request id, construct scoped value, tear down.
   for (const a of adapters) {
     if (a.scopedCycle) {
       const scopedFn = a.scopedCycle.bind(a);
-      bench.add(`${a.name}: Scoped 1k`, () => {
-        scopedFn(1_000);
-      });
+      addTask(
+        `${a.name}: Scoped 1k`,
+        () => {
+          scopedFn(1_000);
+        },
+        { beforeAll: () => prepareWarmAdapter(a) }
+      );
     }
   }
 
-  // Async factory resolution (only adapters that support it)
+  // Native async singleton hot path; creation is completed in beforeAll.
   for (const a of adapters) {
     if (a.asyncFactoryCycle) {
       const asyncFn = a.asyncFactoryCycle.bind(a);
-      bench.add(`${a.name}: Async Factory 100`, async () => {
-        await asyncFn(100);
-      });
+      addTask(
+        `${a.name}: Async cached singleton 100`,
+        async () => {
+          await asyncFn(100);
+        },
+        { beforeAll: () => prepareAsyncAdapter(a) }
+      );
     }
   }
 
-  console.log(`[phase] running ${bench.tasks?.length ?? 0} tasks`);
+  const parsedSeed = Number.parseInt(process.env.BENCH_SEED ?? '', 10);
+  const seed = Number.isFinite(parsedSeed) ? parsedSeed >>> 0 : Date.now() >>> 0;
+  for (const task of deterministicShuffle(taskSpecs, seed)) {
+    bench.add(task.name, task.fn, task.options);
+  }
+  let completedTasks = 0;
+  bench.addEventListener('cycle', (event) => {
+    completedTasks++;
+    console.log(`[task ${completedTasks}/${taskSpecs.length}] ${event.task?.name ?? 'unknown'}`);
+  });
+  console.log(`Seed: ${seed}`);
+  console.log(`Tinybench: ${benchmarkTimeMs}ms measured + ${warmupTimeMs}ms warmup per task`);
+  console.log(`[phase] running ${bench.tasks?.length ?? 0} tasks in seeded order`);
   await bench.run();
 
   console.table(bench.table());
 
   console.log('\n=== Percentile Analysis ===\n');
 
-  for (const phase of [
-    'Cold boot',
-    'Warm 1k requests',
-    'Burst 10k',
-    'Bridge 5k',
-    'Scoped 1k',
-    'Async Factory 100',
-  ] as const) {
-    console.log(`━━━ ${phase} ━━━\n`);
+  for (const phase of PHASES) {
+    console.log(`━━━ ${phase.name} ━━━\n`);
 
     for (const adapter of adapters) {
-      const taskName = `${adapter.name}: ${phase}`;
-      const task: any = (bench as any).tasks?.find((x: any) => x.name === taskName);
+      const taskName = `${adapter.name}: ${phase.name}`;
+      const task = bench.tasks.find((candidate) => candidate.name === taskName);
 
-      if (!task?.result?.samples) {
+      if (!task?.result?.latency.samples) {
         console.log(`${adapter.name.padEnd(12)} - No samples collected\n`);
         continue;
       }
 
-      const samplesNs = task.result.samples.map((s: number) => s * 1_000_000_000);
+      const samplesNs = task.result.latency.samples.map((sampleMs) => sampleMs * 1_000_000);
       const stats = calculatePercentiles(samplesNs);
+      const eligible = percentileEligibility(stats.samples);
+      const tail = (value: number, available: boolean) =>
+        available ? formatNs(value).padStart(12) : 'insufficient samples';
 
       console.log(`${adapter.name}:`);
       console.log(`  Samples:  ${stats.samples.toLocaleString()}`);
       console.log(`  Min:      ${formatNs(stats.min)}`);
       console.log(`  p50:      ${formatNs(stats.p50).padStart(12)} (median)`);
-      console.log(`  p90:      ${formatNs(stats.p90).padStart(12)}`);
-      console.log(`  p95:      ${formatNs(stats.p95).padStart(12)}`);
-      console.log(`  p99:      ${formatNs(stats.p99).padStart(12)}`);
-      console.log(`  p99.9:    ${formatNs(stats.p999).padStart(12)}`);
+      console.log(`  p90:      ${tail(stats.p90, eligible.p90)}`);
+      console.log(`  p95:      ${tail(stats.p95, eligible.p95)}`);
+      console.log(`  p99:      ${tail(stats.p99, eligible.p99)}`);
+      console.log(`  p99.9:    ${tail(stats.p999, eligible.p999)}`);
       console.log(`  Max:      ${formatNs(stats.max)}`);
       console.log(`  Mean:     ${formatNs(stats.mean)}`);
       console.log(`  StdDev:   ${formatNs(stats.stddev)}`);
+      if (process.env.BENCH_HISTOGRAM === '1') {
+        console.log('  Histogram (ns, powers of two):');
+        for (const bucket of logarithmicHistogram(samplesNs)) {
+          console.log(
+            `    ${formatNs(bucket.lowerBound)}..${formatNs(bucket.upperBound)} ${bucket.count}`
+          );
+        }
+      }
       console.log();
     }
     console.log();
   }
 
-  console.log('\n=== Summary (lower is better) ===');
-  const getPeriodMs = (name: string) => {
-    const t: any = (bench as any).tasks?.find((x: any) => x.name === name);
-    if (!t?.result) return -1; // task didn't run
-    const s = t.result.period ?? t.result.mean ?? 0;
-    return s * 1000;
+  console.log('\n=== Summary (median latency; lower is better) ===');
+  const getMedianMs = (name: string) => {
+    const task = bench.tasks.find((candidate) => candidate.name === name);
+    return task?.result?.latency.p50 ?? -1;
   };
 
-  for (const phase of [
-    'Cold boot',
-    'Warm 1k requests',
-    'Burst 10k',
-    'Bridge 5k',
-    'Scoped 1k',
-    'Async Factory 100',
-  ] as const) {
-    console.log(`\n-- ${phase}`);
+  for (const phase of PHASES) {
+    console.log(`\n-- ${phase.name}`);
     const rows = adapters
-      .map((a) => ({ name: a.name, ms: getPeriodMs(`${a.name}: ${phase}`) }))
+      .map((a) => ({ name: a.name, ms: getMedianMs(`${a.name}: ${phase.name}`) }))
       .filter((r) => r.ms > 0); // Exclude adapters that didn't participate
 
     if (rows.length === 0) {
@@ -1023,9 +1259,15 @@ async function main() {
       continue;
     }
 
-    rows.forEach((r) => console.log(`${r.name.padEnd(12)} ${ms(r.ms)}`));
+    rows.forEach((row) => {
+      const batch = formatNs(row.ms * 1_000_000);
+      const perOperation = formatNs((row.ms * 1_000_000) / phase.batchSize);
+      console.log(
+        `${row.name.padEnd(12)} ${batch.padStart(10)} / batch  ${perOperation.padStart(10)} / ${phase.unit}`
+      );
+    });
     const best = rows.reduce((p, c) => (p.ms <= c.ms ? p : c));
-    console.log(`Fastest: ${best.name} (${ms(best.ms)})`);
+    console.log(`Fastest: ${best.name} (${formatNs(best.ms * 1_000_000)} per batch)`);
     const base = rows.find((r) => r.name === 'Ceryn');
     if (base) {
       for (const r of rows) {
@@ -1045,13 +1287,53 @@ async function main() {
     }
   }
 
+  if (process.env.BENCH_OUTPUT_JSON) {
+    const outputPath = resolve(process.env.BENCH_OUTPUT_JSON);
+    writeFileSync(
+      outputPath,
+      `${JSON.stringify(
+        {
+          suite: 'warm-process',
+          seed,
+          environment: {
+            node: process.version,
+            platform: process.platform,
+            arch: process.arch,
+            cpu: cpu[0]?.model ?? 'unknown',
+          },
+          tasks: bench.tasks.map((task) => ({
+            name: task.name,
+            samplesNs: task.result?.latency.samples.map((sampleMs) => sampleMs * 1_000_000) ?? [],
+          })),
+        },
+        null,
+        2
+      )}\n`
+    );
+    console.log(`\nRaw samples written to ${outputPath}`);
+  }
+
   // Notes on methodology
   console.log('\n=== Notes ===');
-  console.log('• Scoped 1k: Ceryn scope includes provide() + resolve() + disposeSync() with');
-  console.log('  full LIFO cleanup. Tsyringe child container has no disposal semantics.');
-  console.log('  Ceryn trades raw speed for correctness (auto-disposal, scope-local overrides).');
-  console.log('• Async Factory: Only Ceryn supports native async factory resolution with');
-  console.log('  promise deduplication and per-caller AbortSignal cancellation.');
+  console.log(
+    '• This is a warm-process microbenchmark; it does not measure process or module cold start.'
+  );
+  console.log(
+    '• Tinybench warmup runs before every task; adapter setup runs outside timed samples.'
+  );
+  console.log('• Parent lookup resolves a singleton registered in a parent/imported container.');
+  console.log('• Scoped work creates a child/scope, provides RequestId, constructs a service,');
+  console.log(
+    "  reads it, and performs the adapter's idiomatic synchronous teardown where available."
+  );
+  console.log(
+    '• Async cached singleton includes only adapters with a native async resolution API;'
+  );
+  console.log('  singleton creation completes before timed samples.');
+  console.log('• Tail percentiles require at least ten expected tail observations.');
+  console.log(
+    '• Use npm run bench:isolated for process-level startup and retained-memory estimates.'
+  );
 
   console.log('\nBenchmark complete');
 }

@@ -8,7 +8,9 @@
  *   Bit  2:    Has materialized instance
  *   Bit  3:    Has no dependencies (fast-path optimization)
  *   Bit  4:    Container owns materialized instance and may dispose it
- *   Bits 5-31: Reserved for future flags
+ *   Bit  5: Entry is backed by a pre-created value provider
+ *   Bit  6: All declared dependencies were local and lifecycle-validated
+ *   Bits 7-31: Reserved for future flags
  *
  * Design rationale:
  *   - Lifecycle in bits 0-1 for fast masking and comparison
@@ -51,6 +53,17 @@ export const FLAG_HAS_NO_DEPS = 1 << 3; // Bit 3
  * External values such as useValue or scope.provide() are unowned by default.
  */
 export const FLAG_OWNS_INSTANCE = 1 << 4; // Bit 4
+
+/**
+ * State flag: Entry is backed by a `useValue` registration.
+ *
+ * Value registrations are part of the container configuration rather than a
+ * materialized cache entry, so `Vault.clear()` must retain them.
+ */
+export const FLAG_VALUE_PROVIDER = 1 << 5; // Bit 5
+
+/** All declared dependencies were local and validated in registration order. */
+export const FLAG_LOCAL_DEPS_VALIDATED = 1 << 6; // Bit 6
 
 /**
  * Legacy alias for LIFECYCLE_SINGLETON (bit pattern 0b00).

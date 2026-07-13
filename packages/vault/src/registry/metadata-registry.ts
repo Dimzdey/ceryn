@@ -55,6 +55,7 @@ type GlobalBag = {
 type RegistryStore = {
   defaultBag: GlobalBag;
   namespaces: Map<string, GlobalBag>;
+  generation: number;
 };
 
 /**
@@ -105,18 +106,19 @@ function ensureStore(): RegistryStore {
   const g = globalThis as any;
   const existing = g[GLOBAL_SYMBOL] as RegistryStore | GlobalBag | undefined;
   if (!existing) {
-    const fresh: RegistryStore = { defaultBag: createBag(), namespaces: new Map() };
+    const fresh: RegistryStore = { defaultBag: createBag(), namespaces: new Map(), generation: 0 };
     g[GLOBAL_SYMBOL] = fresh;
     return fresh;
   }
   if (isGlobalBag(existing)) {
-    const upgraded: RegistryStore = { defaultBag: existing, namespaces: new Map() };
+    const upgraded: RegistryStore = { defaultBag: existing, namespaces: new Map(), generation: 0 };
     g[GLOBAL_SYMBOL] = upgraded;
     return upgraded;
   }
   const store = existing;
   if (!store.defaultBag) store.defaultBag = createBag();
   if (!store.namespaces) store.namespaces = new Map();
+  if (store.generation === undefined) store.generation = 0;
   return store;
 }
 
@@ -155,6 +157,11 @@ function resolveBag(namespace?: string): GlobalBag {
  * - Namespaced bags: used for test isolation or multi-tenant scenarios
  */
 export class MetadataRegistry {
+  /** Monotonic stamp for invalidating compiled/bootstrap metadata summaries. */
+  static get stamp(): number {
+    return ensureStore().generation;
+  }
+
   /**
    * Register metadata from @Injectable() decorator.
    *
@@ -168,6 +175,7 @@ export class MetadataRegistry {
    * @param metadata - Provider metadata (name, label, lifecycle)
    */
   static registerProvider(target: Constructor, metadata: ProviderMetadata): void {
+    ensureStore().generation += 1;
     const bag = this.getBag();
     let rec = bag.relics.get(target);
     if (!rec) {
@@ -208,6 +216,7 @@ export class MetadataRegistry {
     parameterIndex: number,
     token: InjectionToken
   ): void {
+    ensureStore().generation += 1;
     const bag = this.getBag();
     let rec = bag.relics.get(target);
     if (!rec) {
@@ -307,6 +316,7 @@ export class MetadataRegistry {
    */
   static reset(namespace?: string): void {
     const store = ensureStore();
+    store.generation += 1;
     if (!namespace) {
       store.defaultBag = createBag();
       return;

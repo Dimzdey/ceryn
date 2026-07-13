@@ -5,6 +5,43 @@ import { Vault } from '../src/core/vault.js';
 import { LifecycleViolationError } from '../src/errors/errors.js';
 import { Lifecycle } from '../src/types/types.js';
 
+function createSameTokenForeignConsumerVaults() {
+  const ConsumerToken = token<{ dependency: string }>('SameTokenForeignConsumer');
+  const DependencyToken = token<string>('SameTokenImportedDependency');
+
+  const producer = new Vault({
+    name: 'SameTokenProducer',
+    providers: [
+      {
+        provide: ConsumerToken,
+        lifecycle: Lifecycle.Singleton,
+        useFactory: () => ({ dependency: 'producer-local' }),
+      },
+      {
+        provide: DependencyToken,
+        lifecycle: Lifecycle.Transient,
+        useFactory: () => 'imported',
+      },
+    ],
+    exports: [DependencyToken],
+  });
+
+  const root = new Vault({
+    name: 'SameTokenRoot',
+    providers: [
+      {
+        provide: ConsumerToken,
+        lifecycle: Lifecycle.Transient,
+        deps: [DependencyToken],
+        useFactory: (dependency) => ({ dependency }),
+      },
+    ],
+    imports: [producer],
+  });
+
+  return { ConsumerToken, root };
+}
+
 describe('Cross-module lifecycle validation', () => {
   it('rejects a root singleton factory that depends on an imported scoped provider', () => {
     const ScopedToken = token('ImportedScoped');
@@ -108,5 +145,23 @@ describe('Cross-module lifecycle validation', () => {
     scope.provide(DatabaseToken, database);
 
     expect(scope.resolve(ScopedToken)).toEqual({ dep: database });
+  });
+
+  it('resolves through a producer that has a same-token singleton shadow', () => {
+    const { ConsumerToken, root } = createSameTokenForeignConsumerVaults();
+
+    expect(root.resolve(ConsumerToken)).toEqual({ dependency: 'imported' });
+  });
+
+  it('resolves asynchronously through a producer that has a same-token singleton shadow', async () => {
+    const { ConsumerToken, root } = createSameTokenForeignConsumerVaults();
+
+    await expect(root.resolveAsync(ConsumerToken)).resolves.toEqual({ dependency: 'imported' });
+  });
+
+  it('canResolve accepts a foreign consumer shadowed by a producer singleton', () => {
+    const { ConsumerToken, root } = createSameTokenForeignConsumerVaults();
+
+    expect(root.canResolve(ConsumerToken)).toBe(true);
   });
 });

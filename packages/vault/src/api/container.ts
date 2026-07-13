@@ -2,7 +2,7 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import { Vault } from '../core/vault.js';
 import { ModuleRegistry } from '../decorators/index.js';
-import type { Constructor } from '../types/types.js';
+import type { Constructor, DecoratedModuleClass } from '../types/types.js';
 
 /**
  * The `Container` class provides static methods for creating and managing vault instances.
@@ -57,13 +57,11 @@ export class Container {
    * ```
    */
   static from(moduleClass: Constructor): Vault {
-    const resolver = this.getDefaultLazyResolver();
-    Vault.setDefaultLazyResolver(resolver);
+    Vault.setDefaultLazyResolver(this.getDefaultLazyResolver());
 
     // Return cached instance if exists
-    if (this.lazyVaults.has(moduleClass)) {
-      return this.lazyVaults.get(moduleClass)!;
-    }
+    const cached = this.lazyVaults.get(moduleClass);
+    if (cached) return cached;
 
     // Detect circular dependencies
     if (this.resolving.has(moduleClass)) {
@@ -81,20 +79,9 @@ export class Container {
       const config = ModuleRegistry.get(moduleClass);
       if (!config) throw new Error(`${moduleClass.name} is not a decorated vault`);
 
-      // Pass through module classes for lazy resolution
-      const imports =
-        config.imports?.map((imported) => {
-          if (imported instanceof Vault) return imported;
-          return imported; // Leave constructor functions for lazy resolution
-        }) ?? [];
-
-      // Create vault instance with lazy resolver
-      const lazyResolver = config.lazyResolve ?? resolver;
-      const vault = new Vault({
-        ...config,
-        imports: imports as any,
-        lazyResolve: lazyResolver,
-      });
+      // Vault reads the decorated config directly. Its configured resolver takes
+      // precedence, while class imports fall back to the shared resolver above.
+      const vault = new Vault(moduleClass as DecoratedModuleClass);
 
       // Cache and return
       this.lazyVaults.set(moduleClass, vault);
@@ -136,6 +123,7 @@ export class Container {
   static reset(): void {
     this.clearCache();
     this.boundLazyResolver = undefined;
+    Vault.resetBootstrapCaches();
     Vault.setDefaultLazyResolver(undefined);
   }
 }

@@ -59,14 +59,15 @@ export type Entry = {
  * Registry of canonical entries for a single vault.
  *
  * Maintains the authoritative mapping from canonical token IDs to their
- * Entry metadata. Also tracks ownership for collision detection.
+ * Entry metadata. Every store belongs to one vault, so ownership is retained
+ * once for collision diagnostics rather than repeated for every token.
  */
 export class EntryStore {
   /** Primary storage: canonical token -> Entry metadata */
   private readonly entries = new Map<CanonicalId, Entry>();
 
-  /** Ownership tracking: canonical token -> vault name (for error messages) */
-  private readonly owners = new Map<CanonicalId, string>();
+  /** Owning vault name, retained for collision error messages. */
+  private ownerName?: string;
 
   /**
    * Number of registered canonical entries.
@@ -93,6 +94,11 @@ export class EntryStore {
     yield* this.entries.keys();
   }
 
+  /** Iterate authoritative entries in provider registration order. */
+  *values(): IterableIterator<Entry> {
+    yield* this.entries.values();
+  }
+
   /**
    * Check if a canonical token is registered in this store.
    *
@@ -111,11 +117,10 @@ export class EntryStore {
    * @throws TokenCollisionError if the canonical token is already registered
    */
   add(entry: Entry, vaultName: string): void {
-    const existingOwner = this.owners.get(entry.token);
-    if (existingOwner) {
-      throw new TokenCollisionError(entry.token, existingOwner, vaultName);
+    if (this.entries.has(entry.token)) {
+      throw new TokenCollisionError(entry.token, this.ownerName ?? vaultName, vaultName);
     }
     this.entries.set(entry.token, entry);
-    this.owners.set(entry.token, vaultName);
+    this.ownerName ??= vaultName;
   }
 }

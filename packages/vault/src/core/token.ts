@@ -41,10 +41,21 @@ export interface Token<T = unknown> {
 }
 
 /**
- * Global counter for generating unique token IDs.
- * Starts at 0 and increments with each token() call.
+ * Process-wide counter for generating unique token IDs.
+ *
+ * Symbol.for() keeps the sequence shared when the package is loaded through
+ * multiple bundles or module instances in the same JavaScript realm.
  */
-let _tokCounter = 0;
+const TOKEN_COUNTER_SYMBOL = Symbol.for('ceryn.tokenCounter');
+
+function nextTokenId(): CanonicalId {
+  const globalStore = globalThis as typeof globalThis & {
+    [TOKEN_COUNTER_SYMBOL]?: number;
+  };
+  const next = (globalStore[TOKEN_COUNTER_SYMBOL] ?? 0) + 1;
+  globalStore[TOKEN_COUNTER_SYMBOL] = next;
+  return `tok_${next}` as CanonicalId;
+}
 
 /**
  * Create a new type-safe injection token.
@@ -64,7 +75,7 @@ let _tokCounter = 0;
  */
 export function token<T = unknown>(label?: string): Token<T> {
   const resolvedLabel = label ?? `Token`;
-  const id = `tok_${++_tokCounter}` as CanonicalId;
+  const id = nextTokenId();
   const t: Token<T> = Object.freeze({
     kind: 'token',
     id,

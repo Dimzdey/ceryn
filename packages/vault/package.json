@@ -28,7 +28,9 @@
     "test:ui": "vitest --ui",
     "typecheck": "tsc --noEmit",
     "clean": "rm -rf dist",
-    "bench": "tsx --tsconfig tsconfig.bench.json --expose-gc benchmarks/benchmark.ts"
+    "bench": "tsx --tsconfig tsconfig.bench.json --expose-gc benchmarks/benchmark.ts",
+    "bench:warm": "tsx --tsconfig tsconfig.bench.json --expose-gc benchmarks/benchmark.ts",
+    "bench:isolated": "npm run build && node --expose-gc benchmarks/isolated/orchestrator.mjs"
   },
   "keywords": [
     "dependency-injection",
