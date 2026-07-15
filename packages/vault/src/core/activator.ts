@@ -35,8 +35,7 @@ import type { Scope } from './scope.js';
 import type { CanonicalId } from './token.js';
 import type { Vault } from './vault.js';
 
-/** Empty dependencies constant - reused to avoid allocations */
-const EMPTY_DEPS: readonly CanonicalId[] = Object.freeze([] as CanonicalId[]);
+type InstantiateHook = (token: string, durationNs: number) => void;
 
 /**
  * High-resolution timer function.
@@ -75,10 +74,7 @@ export class Activator {
    * @param execute - Function that performs the instantiation
    * @returns The instantiated value
    */
-  private instrumentSync<T>(token: CanonicalId, execute: () => T): T {
-    const hook = this.vault.getInstantiateHook();
-    if (!hook) return execute();
-
+  private instrumentSync<T>(token: CanonicalId, hook: InstantiateHook, execute: () => T): T {
     const start = nowMs();
     try {
       return execute();
@@ -94,16 +90,95 @@ export class Activator {
    * @param execute - Function that performs the async instantiation
    * @returns Promise of the instantiated value
    */
-  private async instrumentAsync<T>(token: CanonicalId, execute: () => Promise<T> | T): Promise<T> {
-    const hook = this.vault.getInstantiateHook();
-    if (!hook) return await execute();
-
+  private async instrumentAsync<T>(
+    token: CanonicalId,
+    hook: InstantiateHook,
+    execute: () => Promise<T> | T
+  ): Promise<T> {
     const start = nowMs();
     try {
       return await execute();
     } finally {
       hook(token, toNs(nowMs() - start));
     }
+  }
+
+  private invokeFactorySync(
+    entry: Entry,
+    dependencyCount: number,
+    oneDependency: unknown,
+    manyDependencies: readonly unknown[] | undefined
+  ): unknown {
+    const factory = entry.factory!;
+    const result =
+      dependencyCount === 0
+        ? factory()
+        : dependencyCount === 1
+          ? factory(oneDependency)
+          : factory(...manyDependencies!);
+    if (result && typeof (result as PromiseLike<unknown>).then === 'function') {
+      throw new FactoryExecutionError(
+        entry.token,
+        new Error('Async factory requires resolveAsync()')
+      );
+    }
+    if (typeof result === 'function') {
+      throw new FactoryExecutionError(
+        entry.token,
+        new Error('Curried async factory requires resolveAsync()')
+      );
+    }
+    return result;
+  }
+
+  private async invokeFactoryAsync(
+    entry: Entry,
+    dependencyCount: number,
+    oneDependency: unknown,
+    manyDependencies: readonly unknown[] | undefined,
+    signal?: AbortSignal
+  ): Promise<unknown> {
+    const factory = entry.factory!;
+    const withContext = factory.length === dependencyCount + 1;
+    const maybe =
+      dependencyCount === 0
+        ? withContext
+          ? factory({ signal })
+          : factory()
+        : dependencyCount === 1
+          ? withContext
+            ? factory(oneDependency, { signal })
+            : factory(oneDependency)
+          : withContext
+            ? factory(...manyDependencies!, { signal })
+            : factory(...manyDependencies!);
+    return typeof maybe === 'function'
+      ? await (maybe as (ctx: { signal?: AbortSignal }) => Promise<unknown>)({ signal })
+      : await maybe;
+  }
+
+  private invokeConstructorSync(
+    entry: Entry,
+    dependencyCount: number,
+    oneDependency: unknown,
+    manyDependencies: readonly unknown[] | undefined
+  ): unknown {
+    const ctor = entry.ctor!;
+    const hook = this.vault.getInstantiateHook();
+    if (!hook) {
+      return dependencyCount === 0
+        ? new ctor()
+        : dependencyCount === 1
+          ? new ctor(oneDependency)
+          : new ctor(...manyDependencies!);
+    }
+    return this.instrumentSync(entry.token, hook, () =>
+      dependencyCount === 0
+        ? new ctor()
+        : dependencyCount === 1
+          ? new ctor(oneDependency)
+          : new ctor(...manyDependencies!)
+    );
   }
 
   /**
@@ -123,32 +198,33 @@ export class Activator {
 
     // Factory-backed (sync only)
     if (entry.factory) {
-      const deps = entry.factoryDeps ?? EMPTY_DEPS;
-      const args = deps.map((dep) =>
-        this.vault._resolveProvider(dep, path, scope, lifecycleAlreadyValidated)
-      );
+      const dependencyCount = entry.factoryDeps.length;
+      const oneDependency =
+        dependencyCount === 1
+          ? this.vault._resolveProvider(
+              entry.factoryDeps[0],
+              path,
+              scope,
+              lifecycleAlreadyValidated
+            )
+          : undefined;
+      const manyDependencies =
+        dependencyCount > 1
+          ? entry.factoryDeps.map((dependency) =>
+              this.vault._resolveProvider(dependency, path, scope, lifecycleAlreadyValidated)
+            )
+          : undefined;
       try {
-        return this.instrumentSync(entry.token, () => {
-          const result = entry.factory!(...args);
-          if (result && typeof (result as Promise<unknown>).then === 'function') {
-            throw new FactoryExecutionError(
-              entry.token,
-              new Error('Async factory requires resolveAsync()')
-            );
-          }
-          if (typeof result === 'function') {
-            throw new FactoryExecutionError(
-              entry.token,
-              new Error('Curried async factory requires resolveAsync()')
-            );
-          }
-          return result;
-        });
-      } catch (e) {
-        // Preserve explicit FactoryExecutionError rethrows
-        if (e instanceof FactoryExecutionError) throw e;
-        // Wrap other errors to provide token context
-        throw new FactoryExecutionError(entry.token, e);
+        const hook = this.vault.getInstantiateHook();
+        if (!hook) {
+          return this.invokeFactorySync(entry, dependencyCount, oneDependency, manyDependencies);
+        }
+        return this.instrumentSync(entry.token, hook, () =>
+          this.invokeFactorySync(entry, dependencyCount, oneDependency, manyDependencies)
+        );
+      } catch (error) {
+        if (error instanceof FactoryExecutionError) throw error;
+        throw new FactoryExecutionError(entry.token, error);
       }
     }
 
@@ -158,17 +234,25 @@ export class Activator {
       throw new UnconstructableProviderError(entry.token);
     }
 
-    // Zero-summons fast path: cheap constructor call when there are no dependencies
-    if (entry.flags & FLAG_HAS_NO_DEPS)
-      return this.instrumentSync(entry.token, () => new entry.ctor!());
-
-    // Constructor with summons (sync)
-    const args = entry.summons.map((dep, idx) => {
-      if (!dep) throw new MissingInjectDecoratorError(entry.ctor!.name, idx);
-      return this.vault._resolveProvider(dep, path, scope, lifecycleAlreadyValidated);
-    });
-
-    return this.instrumentSync(entry.token, () => new entry.ctor!(...args));
+    const dependencyCount = entry.flags & FLAG_HAS_NO_DEPS ? 0 : entry.summons.length;
+    let oneDependency: unknown;
+    let manyDependencies: readonly unknown[] | undefined;
+    if (dependencyCount === 1) {
+      const dependency = entry.summons[0];
+      if (!dependency) throw new MissingInjectDecoratorError(entry.ctor.name, 0);
+      oneDependency = this.vault._resolveProvider(
+        dependency,
+        path,
+        scope,
+        lifecycleAlreadyValidated
+      );
+    } else if (dependencyCount > 1) {
+      manyDependencies = entry.summons.map((dependency, index) => {
+        if (!dependency) throw new MissingInjectDecoratorError(entry.ctor!.name, index);
+        return this.vault._resolveProvider(dependency, path, scope, lifecycleAlreadyValidated);
+      });
+    }
+    return this.invokeConstructorSync(entry, dependencyCount, oneDependency, manyDependencies);
   }
 
   /**
@@ -192,11 +276,19 @@ export class Activator {
 
     // Factory-backed (async-aware)
     if (entry.factory) {
-      // Resolve factory deps asynchronously; factories may themselves depend
-      // on other async factories so we await them all here.
-      let deps: readonly unknown[] = EMPTY_DEPS;
-      if (entry.factoryDeps.length > 0) {
-        deps = await Promise.all(
+      const dependencyCount = entry.factoryDeps.length;
+      let oneDependency: unknown;
+      let manyDependencies: readonly unknown[] | undefined;
+      if (dependencyCount === 1) {
+        oneDependency = await this.vault._resolveProviderAsync(
+          entry.factoryDeps[0],
+          path.fork(),
+          signal,
+          scope,
+          lifecycleAlreadyValidated
+        );
+      } else if (dependencyCount > 1) {
+        manyDependencies = await Promise.all(
           entry.factoryDeps.map((dependency) =>
             this.vault._resolveProviderAsync(
               dependency,
@@ -210,20 +302,24 @@ export class Activator {
       }
 
       try {
-        return await this.instrumentAsync(entry.token, async () => {
-          const maybe =
-            entry.factory!.length === deps.length + 1
-              ? entry.factory!(...deps, { signal })
-              : entry.factory!(...deps);
-
-          return typeof maybe === 'function'
-            ? await (maybe as (ctx: { signal?: AbortSignal }) => Promise<unknown>)({ signal })
-            : await maybe;
-        });
-      } catch (e) {
-        // When the AbortSignal was triggered, prefer a clear Abort error with cause
-        if (signal?.aborted) throw new Error(`Factory for '${entry.token}' aborted`, { cause: e });
-        throw new FactoryExecutionError(entry.token, e);
+        const hook = this.vault.getInstantiateHook();
+        if (!hook) {
+          return await this.invokeFactoryAsync(
+            entry,
+            dependencyCount,
+            oneDependency,
+            manyDependencies,
+            signal
+          );
+        }
+        return await this.instrumentAsync(entry.token, hook, () =>
+          this.invokeFactoryAsync(entry, dependencyCount, oneDependency, manyDependencies, signal)
+        );
+      } catch (error) {
+        if (signal?.aborted) {
+          throw new Error(`Factory for '${entry.token}' aborted`, { cause: error });
+        }
+        throw new FactoryExecutionError(entry.token, error);
       }
     }
 
@@ -233,24 +329,33 @@ export class Activator {
       throw new UnconstructableProviderError(entry.token);
     }
 
-    // Zero-summons fast path
-    if (entry.flags & FLAG_HAS_NO_DEPS)
-      return this.instrumentSync(entry.token, () => new entry.ctor!());
-
-    // Constructor with summons; summons may themselves be async factories
-    const args = await Promise.all(
-      entry.summons.map(async (dep, idx) => {
-        if (!dep) throw new MissingInjectDecoratorError(entry.ctor!.name, idx);
-        return this.vault._resolveProviderAsync(
-          dep,
-          path.fork(),
-          signal,
-          scope,
-          lifecycleAlreadyValidated
-        );
-      })
-    );
-
-    return this.instrumentSync(entry.token, () => new entry.ctor!(...args));
+    const dependencyCount = entry.flags & FLAG_HAS_NO_DEPS ? 0 : entry.summons.length;
+    let oneDependency: unknown;
+    let manyDependencies: readonly unknown[] | undefined;
+    if (dependencyCount === 1) {
+      const dependency = entry.summons[0];
+      if (!dependency) throw new MissingInjectDecoratorError(entry.ctor.name, 0);
+      oneDependency = await this.vault._resolveProviderAsync(
+        dependency,
+        path.fork(),
+        signal,
+        scope,
+        lifecycleAlreadyValidated
+      );
+    } else if (dependencyCount > 1) {
+      manyDependencies = await Promise.all(
+        entry.summons.map(async (dependency, index) => {
+          if (!dependency) throw new MissingInjectDecoratorError(entry.ctor!.name, index);
+          return this.vault._resolveProviderAsync(
+            dependency,
+            path.fork(),
+            signal,
+            scope,
+            lifecycleAlreadyValidated
+          );
+        })
+      );
+    }
+    return this.invokeConstructorSync(entry, dependencyCount, oneDependency, manyDependencies);
   }
 }

@@ -10,7 +10,8 @@
  *   Bit  4:    Container owns materialized instance and may dispose it
  *   Bit  5: Entry is backed by a pre-created value provider
  *   Bit  6: All declared dependencies were local and lifecycle-validated
- *   Bits 7-31: Reserved for future flags
+ *   Bit  7: Owned singleton is tracked for LIFO disposal
+ *   Bits 8-31: Reserved for future flags
  *
  * Design rationale:
  *   - Lifecycle in bits 0-1 for fast masking and comparison
@@ -64,6 +65,9 @@ export const FLAG_VALUE_PROVIDER = 1 << 5; // Bit 5
 
 /** All declared dependencies were local and validated in registration order. */
 export const FLAG_LOCAL_DEPS_VALIDATED = 1 << 6; // Bit 6
+
+/** Owned singleton token is present in its Vault's LIFO disposal order. */
+export const FLAG_DISPOSAL_TRACKED = 1 << 7; // Bit 7
 
 /**
  * Legacy alias for LIFECYCLE_SINGLETON (bit pattern 0b00).

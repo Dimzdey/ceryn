@@ -47,9 +47,9 @@ import {
   LIFECYCLE_SCOPED,
   LIFECYCLE_SINGLETON,
 } from './flags.js';
+import type { Entry } from './entry-store.js';
 import type { ResolutionPath } from './resolution-path.js';
 import type { Scope } from './scope.js';
-import type { CanonicalId } from './token.js';
 import type { Vault } from './vault.js';
 
 /**
@@ -134,7 +134,7 @@ export class ResolverAsync {
    *  - Supports optional scope for Lifecycle.Scoped instances
    *  - Promise deduplication prevents concurrent singleton instantiations
    *
-   * @param canonical - Canonical token ID to resolve
+   * @param entry - Already-loaded local entry to resolve
    * @param path - Dependency path for cycle detection (mutated during traversal)
    * @param signal - Optional AbortSignal for caller-specific cancellation
    * @param scope - Optional scope for scoped lifecycle instances
@@ -142,14 +142,16 @@ export class ResolverAsync {
    * @returns Resolved instance of type T
    */
   async fromEntry<T>(
-    canonical: CanonicalId,
+    entry: Entry,
     path: ResolutionPath,
     signal?: AbortSignal,
     scope?: Scope,
-    boundaryAlreadyValidated = false
+    boundaryAlreadyValidated = false,
+    scopeCacheChecked = false,
+    scopeCacheEntry?: Entry
   ): Promise<T> {
-    const entry = this.vault.store.getByCanonical(canonical);
-    if (!entry) throw this.vault.buildNotFoundError(canonical, path.tokens);
+    const canonical = entry.token;
+    const hadParent = path.length !== 0;
 
     // Detect cycles and produce a helpful cycle trace for diagnostics
     if (!path.tryEnter(canonical)) {
@@ -163,7 +165,9 @@ export class ResolverAsync {
       const lifecycleFlags = entry.flags & LIFECYCLE_MASK;
 
       // Validate lifecycle rules at resolution time (catches order-independent violations)
-      if (!boundaryAlreadyValidated) this.vault._validateLifecycleRules(canonical, path);
+      if (hadParent && !boundaryAlreadyValidated) {
+        this.vault._validateLifecycleRulesForEntry(canonical, entry, path);
+      }
 
       // Singleton lifecycle: Share promise across concurrent requests
       // Lifecycle check: bits 0-1 are 0b00 (LIFECYCLE_SINGLETON)
@@ -171,7 +175,7 @@ export class ResolverAsync {
         // Fast path: hot singleton instance already materialized
         if (entry.flags & FLAG_HAS_INSTANCE) {
           this.vault.cache.primeAll(entry.token, entry);
-          return entry.instance as T;
+          return (entry.resolvedPromise ??= Promise.resolve(entry.instance as T)) as Promise<T>;
         }
 
         // Kick off shared creation only once (promise deduplication)
@@ -179,21 +183,28 @@ export class ResolverAsync {
           // Important: decouple underlying creation from caller's signal so the
           // shared creation continues even if an individual waiter aborts.
           const creationPath = path.fork();
-          entry.promise = Promise.resolve()
+          const creationPromise = Promise.resolve()
             .then(() => this.activator.instantiateAsync(entry, creationPath /* no signal */))
             .then((value) => {
+              if (!this.vault._canCommitAsyncCreation()) {
+                return this.vault._rejectStaleAsyncCreation(entry, value);
+              }
+
               entry.instance = value;
               entry.flags |= FLAG_HAS_INSTANCE;
-              entry.promise = undefined;
               this.vault._trackOwnedInstance(entry);
               this.vault.cache.primeAll(entry.token, entry);
+              entry.promise = undefined;
+              entry.resolvedPromise = creationPromise;
               return value;
             })
-            .catch((err) => {
+            .catch((error) => {
               // On failure clear the promise so callers can retry later
-              entry.promise = undefined;
-              throw err;
+              if (entry.promise === creationPromise) entry.promise = undefined;
+              if (entry.resolvedPromise === creationPromise) entry.resolvedPromise = undefined;
+              throw error;
             });
+          entry.promise = creationPromise;
         }
 
         // Per-caller cancellation: await the shared promise but allow the
@@ -215,16 +226,18 @@ export class ResolverAsync {
 
         // The scope cache stores both completed instances and in-flight creation.
         // This provides the same deduplication guarantee as singleton resolution.
-        let scopedEntry = scope.cache.get(entry.token);
-        if (scopedEntry && scopedEntry.flags & FLAG_HAS_INSTANCE) {
+        let scopedEntry = scopeCacheEntry;
+        if (!scopeCacheChecked) scopedEntry = scope._peekCache(entry.token);
+        if (scopedEntry !== undefined && scopedEntry.flags & FLAG_HAS_INSTANCE) {
           return scopedEntry.instance as T;
         }
 
-        if (!scopedEntry) {
+        if (scopedEntry === undefined) {
           scopedEntry = {
             ...entry,
             instance: undefined,
             promise: undefined,
+            resolvedPromise: undefined,
             flags: entry.flags & ~FLAG_HAS_INSTANCE,
           };
           scope.cache.primeAll(entry.token, scopedEntry);

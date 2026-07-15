@@ -166,6 +166,12 @@ export class Scope {
     return (this._cache ??= new SingletonCache());
   }
 
+  /** @internal Read scoped state without allocating the lazy cache. */
+  _peekCache(canonical: CanonicalId, activeAlreadyChecked = false): Entry | undefined {
+    if (!activeAlreadyChecked && this.disposed) throw new ScopeDisposedError();
+    return this._cache?.get(canonical);
+  }
+
   /**
    * Register a cleanup function to be called when this scope is disposed.
    *
@@ -372,18 +378,10 @@ export class Scope {
    */
   resolve<T>(token: Token<T>): T {
     if (this.disposed) throw new ScopeDisposedError();
+    if (this.vault) return this.vault._resolveFromScope(token, this);
 
-    // Check scope-local registrations first
     const localEntry = this.localRegistrations?.get(token.id);
-    if (localEntry && localEntry.flags & FLAG_HAS_INSTANCE) {
-      return localEntry.instance as T;
-    }
-
-    // Delegate to vault if available
-    if (this.vault) {
-      return this.vault.resolve(token, { scope: this });
-    }
-
+    if (localEntry && localEntry.flags & FLAG_HAS_INSTANCE) return localEntry.instance as T;
     throw new Error(`Token not found: ${String(token)}`);
   }
 
@@ -401,18 +399,10 @@ export class Scope {
    */
   async resolveAsync<T>(token: Token<T>): Promise<T> {
     if (this.disposed) throw new ScopeDisposedError();
+    if (this.vault) return this.vault._resolveFromScopeAsync(token, this);
 
-    // Check scope-local registrations first
     const localEntry = this.localRegistrations?.get(token.id);
-    if (localEntry && localEntry.flags & FLAG_HAS_INSTANCE) {
-      return localEntry.instance as T;
-    }
-
-    // Delegate to vault if available
-    if (this.vault) {
-      return this.vault.resolveAsync(token, { scope: this });
-    }
-
+    if (localEntry && localEntry.flags & FLAG_HAS_INSTANCE) return localEntry.instance as T;
     throw new Error(`Token not found: ${String(token)}`);
   }
 

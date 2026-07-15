@@ -31,6 +31,7 @@
 import { CircularDependencyError, ScopedWithoutScopeError } from '../errors/errors.js';
 import type { Disposable } from '../types/index.js';
 import type { Activator } from './activator.js';
+import type { Entry } from './entry-store.js';
 import {
   FLAG_HAS_INSTANCE,
   FLAG_OWNS_INSTANCE,
@@ -40,7 +41,6 @@ import {
 } from './flags.js';
 import type { ResolutionPath } from './resolution-path.js';
 import type { Scope } from './scope.js';
-import type { CanonicalId } from './token.js';
 import type { Vault } from './vault.js';
 
 export class ResolverSync {
@@ -68,20 +68,22 @@ export class ResolverSync {
    *    sync path (this is enforced by the Activator)
    *  - Supports optional scope for Lifecycle.Scoped instances
    *
-   * @param canonical - Canonical token ID to resolve
+   * @param entry - Already-loaded local entry to resolve
    * @param stack - Dependency stack for cycle detection (mutated during traversal)
    * @param scope - Optional scope for scoped lifecycle instances
    * @param boundaryAlreadyValidated - Skip this entry's lifecycle check after cross-vault validation
    * @returns Resolved instance of type T
    */
   fromEntry<T>(
-    canonical: CanonicalId,
+    entry: Entry,
     path: ResolutionPath,
     scope?: Scope,
-    boundaryAlreadyValidated = false
+    boundaryAlreadyValidated = false,
+    scopeCacheChecked = false,
+    scopeCacheEntry?: Entry
   ): T {
-    const entry = this.vault.store.getByCanonical(canonical);
-    if (!entry) throw this.vault.buildNotFoundError(canonical, path.tokens);
+    const canonical = entry.token;
+    const hadParent = path.length !== 0;
 
     // Detect dependency cycles early with the current canonical token.
     if (!path.tryEnter(canonical)) {
@@ -95,7 +97,9 @@ export class ResolverSync {
       const lifecycleFlags = entry.flags & LIFECYCLE_MASK;
 
       // Validate lifecycle rules at resolution time (catches order-independent violations)
-      if (!boundaryAlreadyValidated) this.vault._validateLifecycleRules(canonical, path);
+      if (hadParent && !boundaryAlreadyValidated) {
+        this.vault._validateLifecycleRulesForEntry(canonical, entry, path);
+      }
 
       // Fast path: hot singleton instance already materialized
       // Check: lifecycle is singleton (0b00) AND instance flag is set
@@ -105,9 +109,10 @@ export class ResolverSync {
       }
 
       // Scoped cache check: return cached instance if available in scope
+      let cached = scopeCacheEntry;
       if (lifecycleFlags === LIFECYCLE_SCOPED && scope) {
-        const cached = scope.cache.get(entry.token);
-        if (cached && cached.flags & FLAG_HAS_INSTANCE) {
+        if (!scopeCacheChecked) cached = scope._peekCache(entry.token);
+        if (cached !== undefined && cached.flags & FLAG_HAS_INSTANCE) {
           return cached.instance as T;
         }
       }
@@ -136,9 +141,11 @@ export class ResolverSync {
       // Scoped: Store in scope-specific cache and register cleanup
       // Note: Create shallow copy to avoid mutating the shared Entry metadata
       if (lifecycleFlags === LIFECYCLE_SCOPED && scope) {
-        const scopedEntry = {
+        const scopedEntry: Entry = {
           ...entry,
           instance: value,
+          promise: undefined,
+          resolvedPromise: undefined,
           flags: entry.flags | FLAG_HAS_INSTANCE,
         };
         // Prime scope cache with canonical token and all aliases

@@ -1,5 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
+import type { Entry } from '../src/core/entry-store.js';
+import { FLAG_DISPOSAL_TRACKED } from '../src/core/flags.js';
 import { token, type CanonicalId } from '../src/core/token.js';
 import { Vault } from '../src/core/vault.js';
 import { Inject, Injectable } from '../src/decorators/index.js';
@@ -16,6 +18,18 @@ import {
 } from '../src/errors/errors.js';
 import { MetadataRegistry } from '../src/registry/metadata-registry.js';
 import { Lifecycle } from '../src/types/types.js';
+
+type PromiseEntry = Entry & { resolvedPromise?: Promise<unknown> };
+
+function deferred<T>() {
+  let resolve!: (value: T | PromiseLike<T>) => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((res, rej) => {
+    resolve = res;
+    reject = rej;
+  });
+  return { promise, resolve, reject };
+}
 
 describe('Vault integration', () => {
   beforeEach(() => {
@@ -285,6 +299,78 @@ describe('Vault integration', () => {
     expect(order).toEqual(['second', 'first']);
   });
 
+  it('keeps disposal tracking consistent across clear and rematerialization', () => {
+    const ValueT = token<{ dispose(): void }>('TrackedValue');
+    const FactoryT = token<{ dispose(): void }>('TrackedFactory');
+    const order: string[] = [];
+    let generation = 0;
+    const vault = new Vault({
+      providers: [
+        {
+          provide: ValueT,
+          useValue: { dispose: () => order.push('value') },
+          owned: true,
+        },
+        {
+          provide: FactoryT,
+          useFactory: () => {
+            const current = ++generation;
+            return { dispose: () => order.push(`factory-${current}`) };
+          },
+        },
+      ],
+    });
+    const state = vault as unknown as { disposalOrder: CanonicalId[] };
+    const valueEntry = vault.store.getByCanonical(ValueT.id)!;
+    const factoryEntry = vault.store.getByCanonical(FactoryT.id)!;
+
+    expect(valueEntry.flags & FLAG_DISPOSAL_TRACKED).toBe(FLAG_DISPOSAL_TRACKED);
+    expect(factoryEntry.flags & FLAG_DISPOSAL_TRACKED).toBe(0);
+    vault.resolve(FactoryT);
+    expect(state.disposalOrder).toEqual([ValueT.id, FactoryT.id]);
+
+    vault.clear();
+    vault.clear();
+    expect(valueEntry.flags & FLAG_DISPOSAL_TRACKED).toBe(FLAG_DISPOSAL_TRACKED);
+    expect(factoryEntry.flags & FLAG_DISPOSAL_TRACKED).toBe(0);
+    expect(state.disposalOrder).toEqual([ValueT.id]);
+
+    vault.resolve(FactoryT);
+    expect(state.disposalOrder).toEqual([ValueT.id, FactoryT.id]);
+    vault.dispose();
+    expect(order).toEqual(['factory-2', 'value']);
+    expect(valueEntry.flags & FLAG_DISPOSAL_TRACKED).toBe(0);
+    expect(factoryEntry.flags & FLAG_DISPOSAL_TRACKED).toBe(0);
+  });
+
+  it('tracks an owned factory exactly once after a retry', () => {
+    const ResourceT = token<{ dispose(): void }>('TrackedRetry');
+    const dispose = vi.fn();
+    let attempts = 0;
+    const vault = new Vault({
+      providers: [
+        {
+          provide: ResourceT,
+          useFactory: () => {
+            if (++attempts === 1) throw new Error('first failure');
+            return { dispose };
+          },
+        },
+      ],
+    });
+    const state = vault as unknown as { disposalOrder: CanonicalId[] };
+    const entry = vault.store.getByCanonical(ResourceT.id)!;
+
+    expect(() => vault.resolve(ResourceT)).toThrow(FactoryExecutionError);
+    expect(entry.flags & FLAG_DISPOSAL_TRACKED).toBe(0);
+    expect(state.disposalOrder).toEqual([]);
+    vault.resolve(ResourceT);
+    vault.resolve(ResourceT);
+    expect(state.disposalOrder).toEqual([ResourceT.id]);
+    vault.dispose();
+    expect(dispose).toHaveBeenCalledTimes(1);
+  });
+
   it('validates lifecycle dependencies eagerly', () => {
     const TransientToken = token('TransientDep');
     const SingletonToken = token('BadSingleton');
@@ -373,6 +459,84 @@ describe('Vault integration', () => {
     expect(factory).toHaveBeenCalledTimes(1);
     expect(vault.resolve(AsyncSingletonToken)).toBe(r1);
     await expect(vault.resolveAsync(AsyncSingletonToken)).resolves.toBe(r1);
+  });
+
+  it('promotes the shared singleton creation promise after commit', async () => {
+    const Value = token<object>('PromotedCreationPromise');
+    const creation = deferred<object>();
+    const vault = new Vault({
+      providers: [{ provide: Value, useFactory: () => creation.promise }],
+    });
+    const entry = vault.store.getByCanonical(Value.id)! as PromiseEntry;
+
+    const publicWaiter = vault.resolveAsync(Value);
+    const sharedCreation = entry.promise;
+    expect(sharedCreation).toBeInstanceOf(Promise);
+    const value = {};
+    creation.resolve(value);
+    await expect(publicWaiter).resolves.toBe(value);
+
+    expect(entry.promise).toBeUndefined();
+    expect(entry.resolvedPromise).toBe(sharedCreation);
+    expect(vault._resolveProviderAsync(Value.id)).toBe(sharedCreation);
+  });
+
+  it('never promotes a rejected singleton creation and promotes its retry', async () => {
+    const Value = token<string>('RejectedPromiseNotPromoted');
+    const factory = vi
+      .fn()
+      .mockRejectedValueOnce(new Error('first failure'))
+      .mockResolvedValue('success');
+    const vault = new Vault({ providers: [{ provide: Value, useFactory: factory }] });
+    const entry = vault.store.getByCanonical(Value.id)! as PromiseEntry;
+
+    await expect(vault.resolveAsync(Value)).rejects.toThrow(FactoryExecutionError);
+    expect(entry.promise).toBeUndefined();
+    expect(entry.resolvedPromise).toBeUndefined();
+    await expect(vault.resolveAsync(Value)).resolves.toBe('success');
+    expect(entry.resolvedPromise).toBeInstanceOf(Promise);
+  });
+
+  it('does not copy root async promise state into a scoped entry', async () => {
+    const Value = token<string>('ScopedPromiseIsolation');
+    const vault = new Vault({
+      providers: [
+        { provide: Value, lifecycle: Lifecycle.Scoped, useFactory: async () => 'scoped' },
+      ],
+    });
+    const rootEntry = vault.store.getByCanonical(Value.id)! as PromiseEntry;
+    const sentinel = Promise.resolve('root sentinel');
+    rootEntry.promise = sentinel;
+    rootEntry.resolvedPromise = sentinel;
+    const scope = vault.createScope();
+
+    await expect(vault.resolveAsync(Value, { scope })).resolves.toBe('scoped');
+    const scopedEntry = scope.cache.get(Value.id)! as PromiseEntry;
+    expect(scopedEntry).not.toBe(rootEntry);
+    expect(scopedEntry.promise).toBeUndefined();
+    expect(scopedEntry.resolvedPromise).toBeUndefined();
+  });
+
+  it('keeps imported fulfilled state owned by the producer Vault', async () => {
+    const Value = token<object>('ProducerFulfilledOwnership');
+    const producer = new Vault({
+      providers: [{ provide: Value, useFactory: async () => ({}) }],
+      exports: [Value],
+    });
+    const consumer = new Vault({ providers: [], imports: [producer] });
+    const producerEntry = producer.store.getByCanonical(Value.id)! as PromiseEntry;
+
+    await expect(consumer.resolveAsync(Value)).resolves.toBeDefined();
+    const fulfilled = producerEntry.resolvedPromise;
+    expect(fulfilled).toBeInstanceOf(Promise);
+
+    consumer.clear();
+    expect(producerEntry.resolvedPromise).toBe(fulfilled);
+    await consumer.dispose();
+    expect(producerEntry.resolvedPromise).toBe(fulfilled);
+
+    producer.clear();
+    expect(producerEntry.resolvedPromise).toBeUndefined();
   });
 
   it('removes abort listeners after async singleton resolution completes', async () => {

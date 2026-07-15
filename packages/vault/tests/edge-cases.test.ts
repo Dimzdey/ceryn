@@ -4,19 +4,36 @@
  * These tests lock expected runtime semantics and regression cases.
  */
 
-import { beforeEach, describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 
+import type { Entry } from '../src/core/entry-store.js';
+import { FLAG_DISPOSAL_TRACKED, FLAG_HAS_INSTANCE } from '../src/core/flags.js';
 import { ResolutionPath } from '../src/core/resolution-path.js';
 import { token } from '../src/core/token.js';
 import { Vault } from '../src/core/vault.js';
 import { Inject, Injectable } from '../src/decorators/index.js';
 import {
+  AggregateDisposalError,
   CircularDependencyError,
+  ContainerDisposedError,
+  FactoryExecutionError,
   InvalidModuleConfigError,
   LifecycleViolationError,
 } from '../src/errors/errors.js';
 import { MetadataRegistry } from '../src/registry/metadata-registry.js';
 import { Lifecycle } from '../src/types/types.js';
+
+type PromiseEntry = Entry & { resolvedPromise?: Promise<unknown> };
+
+function deferred<T>() {
+  let resolve!: (value: T | PromiseLike<T>) => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((res, rej) => {
+    resolve = res;
+    reject = rej;
+  });
+  return { promise, resolve, reject };
+}
 
 beforeEach(() => {
   MetadataRegistry.resetForTests();
@@ -715,55 +732,173 @@ describe('canResolve() cross-vault cycle detection', () => {
 // ---------------------------------------------------------------------------
 
 describe('Vault dispose with in-flight async singleton', () => {
-  it('does not deadlock when dispose is called before an in-flight singleton resolves', async () => {
-    const SlowT = token<string>('SlowAsyncSingleton');
-    let resolveFactory: ((value: string) => void) | undefined;
-    let factoryStarted = false;
+  it('rejects and disposes an owned singleton that fulfills after disposal', async () => {
+    const ResourceT = token<{ dispose: () => void }>('LateOwnedSingleton');
+    const creation = deferred<{ dispose: () => void }>();
+    const dispose = vi.fn();
+    const factory = vi.fn(() => creation.promise);
+    const vault = new Vault({ providers: [{ provide: ResourceT, useFactory: factory }] });
+    const entry = vault.store.getByCanonical(ResourceT.id)! as PromiseEntry;
+    const pending = vault.resolveAsync(ResourceT);
 
-    const factory = () => {
-      factoryStarted = true;
-      return new Promise<string>((resolve) => {
-        resolveFactory = resolve;
-      });
-    };
+    await vi.waitFor(() => expect(factory).toHaveBeenCalledTimes(1));
+    const observed = pending.catch((error: unknown) => error);
+    expect(vault.dispose()).toBeUndefined();
+    creation.resolve({ dispose });
 
+    expect(await observed).toBeInstanceOf(ContainerDisposedError);
+    expect(dispose).toHaveBeenCalledTimes(1);
+    expect(entry.instance).toBeUndefined();
+    expect(entry.promise).toBeUndefined();
+    expect(entry.flags & FLAG_HAS_INSTANCE).toBe(0);
+    expect(entry.resolvedPromise).toBeUndefined();
+    expect(vault.cache.get(ResourceT.id)).toBeUndefined();
+    const state = vault as unknown as { disposalOrder: string[] };
+    expect(state.disposalOrder).not.toContain(ResourceT.id);
+    expect(entry.flags & FLAG_DISPOSAL_TRACKED).toBe(0);
+  });
+
+  it('awaits one late async disposer and shares the rejection reason', async () => {
+    const ResourceT = token<{ dispose: () => Promise<void> }>('LateAsyncDisposer');
+    const creation = deferred<{ dispose: () => Promise<void> }>();
+    const cleanup = deferred<void>();
+    const dispose = vi.fn(() => cleanup.promise);
     const vault = new Vault({
-      providers: [
-        {
-          provide: SlowT,
-          lifecycle: Lifecycle.Singleton,
-          useFactory: factory,
-        },
-      ],
+      providers: [{ provide: ResourceT, useFactory: () => creation.promise }],
     });
+    const first = vault.resolveAsync(ResourceT);
+    const second = vault.resolveAsync(ResourceT);
+    const firstResult = first.catch((error: unknown) => error);
+    const secondResult = second.catch((error: unknown) => error);
 
-    // Start resolution and wait until the factory has actually been invoked
-    const pending = vault.resolveAsync(SlowT);
-    for (let i = 0; i < 10 && !factoryStarted; i++) {
-      await Promise.resolve();
-    }
+    await Promise.resolve();
+    vault.dispose();
+    creation.resolve({ dispose });
+    await vi.waitFor(() => expect(dispose).toHaveBeenCalledTimes(1));
 
-    expect(factoryStarted).toBe(true);
-    expect(resolveFactory).toBeDefined();
+    let settled = false;
+    firstResult.then(() => {
+      settled = true;
+    });
+    await Promise.resolve();
+    expect(settled).toBe(false);
 
-    // Dispose before the factory finishes
-    const disposePending = Promise.resolve(vault.dispose());
+    cleanup.resolve();
+    const [firstError, secondError] = await Promise.all([firstResult, secondResult]);
+    expect(firstError).toBeInstanceOf(ContainerDisposedError);
+    expect(secondError).toBe(firstError);
+  });
 
-    // Resolve the factory after dispose
-    resolveFactory!('late-value');
+  it('does not clean up a non-owned stale singleton', async () => {
+    const ResourceT = token<{ dispose: () => void }>('LateUnownedSingleton');
+    const creation = deferred<{ dispose: () => void }>();
+    const dispose = vi.fn();
+    const vault = new Vault({
+      providers: [{ provide: ResourceT, useFactory: () => creation.promise, owned: false }],
+    });
+    const pending = vault.resolveAsync(ResourceT);
+    const observed = pending.catch((error: unknown) => error);
+    await Promise.resolve();
+    vault.dispose();
+    creation.resolve({ dispose });
 
-    // The pending caller either gets the value or gets an error — but must not hang
-    const resolveResult = await Promise.race([
-      pending.then(() => 'resolved').catch(() => 'rejected'),
-      new Promise<string>((res) => setTimeout(() => res('timeout'), 500)),
-    ]);
-    const disposeResult = await Promise.race([
-      disposePending.then(() => 'disposed').catch(() => 'rejected'),
-      new Promise<string>((res) => setTimeout(() => res('timeout'), 500)),
-    ]);
+    expect(await observed).toBeInstanceOf(ContainerDisposedError);
+    expect(dispose).not.toHaveBeenCalled();
+  });
 
-    expect(resolveResult).not.toBe('timeout');
-    expect(disposeResult).not.toBe('timeout');
+  it('prefers dispose over close and accepts an owned value without a disposer', async () => {
+    const BothT = token<{ dispose(): void; close(): void }>('LateDisposePreference');
+    const bothCreation = deferred<{ dispose(): void; close(): void }>();
+    const dispose = vi.fn();
+    const close = vi.fn();
+    const bothVault = new Vault({
+      providers: [{ provide: BothT, useFactory: () => bothCreation.promise }],
+    });
+    const bothResult = bothVault.resolveAsync(BothT).catch((error: unknown) => error);
+    await Promise.resolve();
+    bothVault.dispose();
+    bothCreation.resolve({ dispose, close });
+
+    expect(await bothResult).toBeInstanceOf(ContainerDisposedError);
+    expect(dispose).toHaveBeenCalledTimes(1);
+    expect(close).not.toHaveBeenCalled();
+
+    const PlainT = token<object>('LateWithoutDisposer');
+    const plainCreation = deferred<object>();
+    const plainVault = new Vault({
+      providers: [{ provide: PlainT, useFactory: () => plainCreation.promise }],
+    });
+    const plainResult = plainVault.resolveAsync(PlainT).catch((error: unknown) => error);
+    await Promise.resolve();
+    plainVault.dispose();
+    plainCreation.resolve({});
+    expect(await plainResult).toBeInstanceOf(ContainerDisposedError);
+  });
+
+  it('reports late cleanup failure through the shared creation', async () => {
+    const ResourceT = token<{ dispose: () => Promise<void> }>('LateCleanupFailure');
+    const creation = deferred<{ dispose: () => Promise<void> }>();
+    const vault = new Vault({
+      providers: [{ provide: ResourceT, useFactory: () => creation.promise }],
+    });
+    const entry = vault.store.getByCanonical(ResourceT.id)! as PromiseEntry;
+    const first = vault.resolveAsync(ResourceT).catch((error: unknown) => error);
+    const second = vault.resolveAsync(ResourceT).catch((error: unknown) => error);
+    await Promise.resolve();
+    vault.dispose();
+    creation.resolve({ dispose: () => Promise.reject('cleanup failed') });
+
+    const [firstError, secondError] = await Promise.all([first, second]);
+    expect(firstError).toBeInstanceOf(AggregateDisposalError);
+    expect(secondError).toBe(firstError);
+    expect((firstError as AggregateDisposalError).errors).toHaveLength(1);
+    expect((firstError as AggregateDisposalError).errors[0].message).toBe('cleanup failed');
+    expect(entry.resolvedPromise).toBeUndefined();
+  });
+
+  it('preserves a factory rejection after disposal', async () => {
+    const ResourceT = token('LateFactoryFailure');
+    const creation = deferred<unknown>();
+    const original = new Error('factory failed');
+    const vault = new Vault({
+      providers: [{ provide: ResourceT, useFactory: () => creation.promise }],
+    });
+    const entry = vault.store.getByCanonical(ResourceT.id)! as PromiseEntry;
+    const first = vault.resolveAsync(ResourceT).catch((error: unknown) => error);
+    const second = vault.resolveAsync(ResourceT).catch((error: unknown) => error);
+    await Promise.resolve();
+    vault.dispose();
+    creation.reject(original);
+
+    const [firstError, secondError] = await Promise.all([first, second]);
+    expect(firstError).toBeInstanceOf(FactoryExecutionError);
+    expect(secondError).toBe(firstError);
+    expect((firstError as FactoryExecutionError).cause).toBe(original);
+    expect((firstError as FactoryExecutionError).token).toBe(ResourceT.id);
+    expect(entry.resolvedPromise).toBeUndefined();
+  });
+
+  it('keeps an aborted waiter detached during late cleanup', async () => {
+    const ResourceT = token<{ dispose: () => void }>('LateAbort');
+    const creation = deferred<{ dispose: () => void }>();
+    const dispose = vi.fn();
+    const controller = new AbortController();
+    const vault = new Vault({
+      providers: [{ provide: ResourceT, useFactory: () => creation.promise }],
+    });
+    const active = vault.resolveAsync(ResourceT).catch((error: unknown) => error);
+    const aborted = vault
+      .resolveAsync(ResourceT, { signal: controller.signal })
+      .catch((error: unknown) => error);
+
+    await Promise.resolve();
+    controller.abort();
+    vault.dispose();
+    creation.resolve({ dispose });
+
+    expect(await aborted).toBeInstanceOf(DOMException);
+    expect(await active).toBeInstanceOf(ContainerDisposedError);
+    expect(dispose).toHaveBeenCalledTimes(1);
   });
 });
 

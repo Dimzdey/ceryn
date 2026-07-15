@@ -239,25 +239,242 @@ describe('Activator branches', () => {
     expect(aggregate).not.toHaveBeenCalled();
   });
 
+  it('does not map zero or one sync dependency', async () => {
+    const { Activator } = await import('../src/core/activator.js');
+    const vault = stubVault();
+    vault._resolveProvider.mockReturnValue('resolved');
+    const activator = new Activator(vault as never);
+
+    const zero = [] as CanonicalId[];
+    const zeroMap = vi.spyOn(zero, 'map');
+    const zeroFactory = baseEntry({ factoryDeps: zero, factory: () => 'zero' });
+    expect(activator.instantiateSync(zeroFactory, new ResolutionPath())).toBe('zero');
+    expect(zeroMap).not.toHaveBeenCalled();
+
+    const oneFactoryDep = ['factory-dependency' as CanonicalId];
+    const factoryMap = vi.spyOn(oneFactoryDep, 'map');
+    const oneFactory = baseEntry({
+      factoryDeps: oneFactoryDep,
+      factory: (dependency) => dependency,
+    });
+    expect(activator.instantiateSync(oneFactory, new ResolutionPath())).toBe('resolved');
+    expect(factoryMap).not.toHaveBeenCalled();
+
+    class OneDependency {
+      constructor(readonly dependency: unknown) {}
+    }
+    const oneSummon = ['constructor-dependency' as CanonicalId];
+    const summonMap = vi.spyOn(oneSummon, 'map');
+    const oneConstructor = baseEntry({ ctor: OneDependency, summons: oneSummon });
+    const value = activator.instantiateSync(oneConstructor, new ResolutionPath()) as OneDependency;
+    expect(value.dependency).toBe('resolved');
+    expect(summonMap).not.toHaveBeenCalled();
+  });
+
+  it('avoids Promise.all for one async factory or constructor dependency', async () => {
+    const { Activator } = await import('../src/core/activator.js');
+    const vault = stubVault();
+    vault._resolveProviderAsync.mockResolvedValue('resolved');
+    const activator = new Activator(vault as never);
+    const aggregate = vi.spyOn(Promise, 'all');
+    const path = new ResolutionPath();
+    path.enter('root' as CanonicalId);
+
+    const factoryEntry = baseEntry({
+      factoryDeps: ['factory-dependency' as CanonicalId],
+      factory: async (dependency) => dependency,
+    });
+    await expect(activator.instantiateAsync(factoryEntry, path)).resolves.toBe('resolved');
+    expect(aggregate).not.toHaveBeenCalled();
+    aggregate.mockClear();
+
+    class OneDependency {
+      constructor(readonly dependency: unknown) {}
+    }
+    const constructorEntry = baseEntry({
+      ctor: OneDependency,
+      summons: ['constructor-dependency' as CanonicalId],
+    });
+    const value = (await activator.instantiateAsync(constructorEntry, path)) as OneDependency;
+    expect(value.dependency).toBe('resolved');
+    expect(aggregate).not.toHaveBeenCalled();
+    for (const call of vault._resolveProviderAsync.mock.calls) {
+      const dependencyPath = call[1] as ResolutionPath;
+      expect(dependencyPath).not.toBe(path);
+      expect(dependencyPath.tokens).toEqual(path.tokens);
+    }
+  });
+
+  it('bypasses instrumentation methods when no hook exists', async () => {
+    const { Activator } = await import('../src/core/activator.js');
+    const vault = stubVault();
+    const activator = new Activator(vault as never);
+    const internal = activator as unknown as {
+      instrumentSync: (...args: unknown[]) => unknown;
+      instrumentAsync: (...args: unknown[]) => Promise<unknown>;
+    };
+    const syncInstrument = vi.spyOn(internal, 'instrumentSync');
+    const asyncInstrument = vi.spyOn(internal, 'instrumentAsync');
+
+    const ctorEntry = baseEntry({ ctor: class NoHook {}, flags: FLAG_HAS_NO_DEPS });
+    activator.instantiateSync(ctorEntry, new ResolutionPath());
+    const factoryEntry = baseEntry({ factory: async () => 'value' });
+    await activator.instantiateAsync(factoryEntry, new ResolutionPath());
+
+    expect(syncInstrument).not.toHaveBeenCalled();
+    expect(asyncInstrument).not.toHaveBeenCalled();
+  });
+
+  it('reports one hook event for every zero, one, and many specialized branch', async () => {
+    const { Activator } = await import('../src/core/activator.js');
+    const vault = stubVault();
+    vault._resolveProvider.mockImplementation((dependency) => dependency);
+    vault._resolveProviderAsync.mockImplementation(async (dependency) => dependency);
+    const hook = vi.fn();
+    vault.getInstantiateHook.mockReturnValue(hook);
+    const activator = new Activator(vault as never);
+
+    class Capture {
+      constructor(..._dependencies: unknown[]) {}
+    }
+
+    const syncEntries = [
+      baseEntry({ factory: () => 0, factoryDeps: [] }),
+      baseEntry({ factory: (...deps) => deps.length, factoryDeps: ['one' as CanonicalId] }),
+      baseEntry({
+        factory: (...deps) => deps.length,
+        factoryDeps: ['one' as CanonicalId, 'two' as CanonicalId],
+      }),
+      baseEntry({ ctor: Capture, flags: FLAG_HAS_NO_DEPS, summons: [] }),
+      baseEntry({ ctor: Capture, summons: ['one' as CanonicalId] }),
+      baseEntry({ ctor: Capture, summons: ['one' as CanonicalId, 'two' as CanonicalId] }),
+    ];
+    for (const entry of syncEntries) {
+      activator.instantiateSync(entry, new ResolutionPath());
+    }
+    expect(hook).toHaveBeenCalledTimes(6);
+
+    hook.mockClear();
+    const asyncEntries = [
+      baseEntry({ factory: async () => 0, factoryDeps: [] }),
+      baseEntry({
+        factory: async (...deps) => deps.length,
+        factoryDeps: ['one' as CanonicalId],
+      }),
+      baseEntry({
+        factory: async (...deps) => deps.length,
+        factoryDeps: ['one' as CanonicalId, 'two' as CanonicalId],
+      }),
+      baseEntry({ ctor: Capture, flags: FLAG_HAS_NO_DEPS, summons: [] }),
+      baseEntry({ ctor: Capture, summons: ['one' as CanonicalId] }),
+      baseEntry({ ctor: Capture, summons: ['one' as CanonicalId, 'two' as CanonicalId] }),
+    ];
+    for (const entry of asyncEntries) {
+      await activator.instantiateAsync(entry, new ResolutionPath());
+    }
+    expect(hook).toHaveBeenCalledTimes(6);
+    expect(hook).toHaveBeenCalledWith('tok_branch', expect.any(Number));
+  });
+
+  it('starts later async siblings when a multi-summon entry is malformed', async () => {
+    const { Activator } = await import('../src/core/activator.js');
+    const { MissingInjectDecoratorError } = await import('../src/errors/errors.js');
+    const vault = stubVault();
+    vault._resolveProviderAsync.mockResolvedValue('resolved');
+    const activator = new Activator(vault as never);
+    const entry = baseEntry({
+      ctor: class MultiSummon {},
+      summons: ['first' as CanonicalId, undefined, 'third' as CanonicalId],
+    });
+
+    await expect(activator.instantiateAsync(entry, new ResolutionPath())).rejects.toThrow(
+      MissingInjectDecoratorError
+    );
+    expect(vault._resolveProviderAsync.mock.calls.map(([token]) => token)).toEqual([
+      'first',
+      'third',
+    ]);
+  });
+
+  it('runs a hook once when a specialized factory throws or rejects', async () => {
+    const { Activator } = await import('../src/core/activator.js');
+    const { FactoryExecutionError } = await import('../src/errors/errors.js');
+    const vault = stubVault();
+    const hook = vi.fn();
+    vault.getInstantiateHook.mockReturnValue(hook);
+    const activator = new Activator(vault as never);
+
+    const syncCause = new Error('sync cause');
+    let syncReason: unknown;
+    try {
+      activator.instantiateSync(
+        baseEntry({
+          factory: () => {
+            throw syncCause;
+          },
+          factoryDeps: [],
+        }),
+        new ResolutionPath()
+      );
+    } catch (error) {
+      syncReason = error;
+    }
+    expect(syncReason).toBeInstanceOf(FactoryExecutionError);
+    expect((syncReason as FactoryExecutionError).cause).toBe(syncCause);
+    expect(hook).toHaveBeenCalledTimes(1);
+
+    hook.mockClear();
+    const asyncCause = new Error('async cause');
+    const asyncReason = await activator
+      .instantiateAsync(
+        baseEntry({
+          factory: async () => {
+            throw asyncCause;
+          },
+          factoryDeps: [],
+        }),
+        new ResolutionPath()
+      )
+      .catch((error: unknown) => error);
+    expect(asyncReason).toBeInstanceOf(FactoryExecutionError);
+    expect((asyncReason as FactoryExecutionError).cause).toBe(asyncCause);
+    expect(hook).toHaveBeenCalledTimes(1);
+  });
+
   it('retains concurrent aggregation with forked dependency paths', async () => {
     const { Activator } = await import('../src/core/activator.js');
     const vault = stubVault();
-    vault._resolveProviderAsync.mockResolvedValue('dependency');
+    let releaseFirst!: (value: string) => void;
+    let releaseSecond!: (value: string) => void;
+    const first = new Promise<string>((resolve) => {
+      releaseFirst = resolve;
+    });
+    const second = new Promise<string>((resolve) => {
+      releaseSecond = resolve;
+    });
+    vault._resolveProviderAsync.mockReturnValueOnce(first).mockReturnValueOnce(second);
     const activator = new Activator(vault as never);
     const aggregate = vi.spyOn(Promise, 'all');
     const path = new ResolutionPath();
     path.enter('root' as CanonicalId);
     const entry = baseEntry({
-      factoryDeps: ['dependency' as CanonicalId],
-      factory: async (dependency) => dependency,
+      factoryDeps: ['first' as CanonicalId, 'second' as CanonicalId],
+      factory: async (a, b) => `${String(a)}:${String(b)}`,
     });
 
-    const value = await activator.instantiateAsync(entry, path);
-
-    expect(value).toBe('dependency');
+    const pending = activator.instantiateAsync(entry, path);
+    expect(vault._resolveProviderAsync).toHaveBeenCalledTimes(2);
     expect(aggregate).toHaveBeenCalledTimes(1);
-    const dependencyPath = vault._resolveProviderAsync.mock.calls[0][1] as ResolutionPath;
-    expect(dependencyPath).not.toBe(path);
-    expect(dependencyPath.tokens).toEqual(path.tokens);
+    const firstPath = vault._resolveProviderAsync.mock.calls[0][1] as ResolutionPath;
+    const secondPath = vault._resolveProviderAsync.mock.calls[1][1] as ResolutionPath;
+    expect(firstPath).not.toBe(path);
+    expect(secondPath).not.toBe(path);
+    expect(firstPath).not.toBe(secondPath);
+    expect(firstPath.tokens).toEqual(path.tokens);
+    expect(secondPath.tokens).toEqual(path.tokens);
+
+    releaseFirst('a');
+    releaseSecond('b');
+    await expect(pending).resolves.toBe('a:b');
   });
 });

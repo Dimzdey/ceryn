@@ -66,28 +66,39 @@ type RegistryStore = {
  */
 const GLOBAL_SYMBOL = Symbol.for('ceryn.staticRelicRegistry');
 
+let validatedStore: RegistryStore | undefined;
+
+type LegacyGlobalBag = {
+  relics: WeakMap<Constructor, MutableProviderRecord>;
+  keys: Set<Constructor>;
+  sealedAll?: unknown;
+};
+
+function isLegacyBag(value: unknown): value is LegacyGlobalBag {
+  if (typeof value !== 'object' || value === null) return false;
+  const bag = value as Partial<LegacyGlobalBag>;
+  return bag.relics instanceof WeakMap && bag.keys instanceof Set;
+}
+
+function isCurrentBag(value: unknown): value is GlobalBag {
+  return isLegacyBag(value) && typeof value.sealedAll === 'boolean';
+}
+
+function isCurrentStore(value: unknown): value is RegistryStore {
+  if (typeof value !== 'object' || value === null) return false;
+  const store = value as Partial<RegistryStore>;
+  return (
+    isCurrentBag(store.defaultBag) &&
+    store.namespaces instanceof Map &&
+    typeof store.generation === 'number'
+  );
+}
+
 /**
  * Create a fresh, empty GlobalBag.
  */
 function createBag(): GlobalBag {
   return { relics: new WeakMap(), keys: new Set(), sealedAll: false };
-}
-
-/**
- * Type guard for GlobalBag (used during store migration).
- *
- * This allows upgrading legacy registry formats to the current RegistryStore
- * structure without breaking existing code.
- */
-function isGlobalBag(value: unknown): value is GlobalBag {
-  return (
-    typeof value === 'object' &&
-    value !== null &&
-    Object.prototype.hasOwnProperty.call(value, 'relics') &&
-    Object.prototype.hasOwnProperty.call(value, 'keys') &&
-    (value as GlobalBag).relics instanceof WeakMap &&
-    (value as GlobalBag).keys instanceof Set
-  );
 }
 
 /**
@@ -102,23 +113,39 @@ function isGlobalBag(value: unknown): value is GlobalBag {
  * GlobalBag directly on globalThis[GLOBAL_SYMBOL].
  */
 function ensureStore(): RegistryStore {
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const g = globalThis as any;
-  const existing = g[GLOBAL_SYMBOL] as RegistryStore | GlobalBag | undefined;
-  if (!existing) {
-    const fresh: RegistryStore = { defaultBag: createBag(), namespaces: new Map(), generation: 0 };
+  const g = globalThis as Record<symbol, unknown>;
+  const existing = g[GLOBAL_SYMBOL];
+
+  if (existing === validatedStore && isCurrentStore(existing)) return existing;
+
+  if (typeof existing !== 'object' || existing === null) {
+    const fresh: RegistryStore = {
+      defaultBag: createBag(),
+      namespaces: new Map(),
+      generation: 0,
+    };
     g[GLOBAL_SYMBOL] = fresh;
+    validatedStore = fresh;
     return fresh;
   }
-  if (isGlobalBag(existing)) {
-    const upgraded: RegistryStore = { defaultBag: existing, namespaces: new Map(), generation: 0 };
+
+  if (isLegacyBag(existing)) {
+    if (typeof existing.sealedAll !== 'boolean') existing.sealedAll = false;
+    const upgraded: RegistryStore = {
+      defaultBag: existing as GlobalBag,
+      namespaces: new Map(),
+      generation: 0,
+    };
     g[GLOBAL_SYMBOL] = upgraded;
+    validatedStore = upgraded;
     return upgraded;
   }
-  const store = existing;
-  if (!store.defaultBag) store.defaultBag = createBag();
-  if (!store.namespaces) store.namespaces = new Map();
-  if (store.generation === undefined) store.generation = 0;
+
+  const store = existing as RegistryStore;
+  if (!isCurrentBag(store.defaultBag)) store.defaultBag = createBag();
+  if (!(store.namespaces instanceof Map)) store.namespaces = new Map();
+  if (typeof store.generation !== 'number') store.generation = 0;
+  validatedStore = store;
   return store;
 }
 
@@ -175,8 +202,9 @@ export class MetadataRegistry {
    * @param metadata - Provider metadata (name, label, lifecycle)
    */
   static registerProvider(target: Constructor, metadata: ProviderMetadata): void {
-    ensureStore().generation += 1;
-    const bag = this.getBag();
+    const store = ensureStore();
+    store.generation += 1;
+    const bag = store.defaultBag;
     let rec = bag.relics.get(target);
     if (!rec) {
       rec = { metadata, links: new Map() };
@@ -216,8 +244,9 @@ export class MetadataRegistry {
     parameterIndex: number,
     token: InjectionToken
   ): void {
-    ensureStore().generation += 1;
-    const bag = this.getBag();
+    const store = ensureStore();
+    store.generation += 1;
+    const bag = store.defaultBag;
     let rec = bag.relics.get(target);
     if (!rec) {
       rec = this.createFallbackRecord(target);
@@ -249,7 +278,7 @@ export class MetadataRegistry {
    * @returns StaticProviderDefinition or undefined if not decorated
    */
   static buildDefinition(ctor: Constructor): StaticProviderDefinition | undefined {
-    const bag = this.getBag();
+    const bag = ensureStore().defaultBag;
     const rec = bag.relics.get(ctor);
     if (!rec) return undefined;
     return rec.cachedDef ?? (rec.cachedDef = this.buildDef(ctor, rec));
@@ -267,7 +296,7 @@ export class MetadataRegistry {
    * Idempotent: safe to call multiple times.
    */
   static sealAll(): void {
-    const bag = this.getBag();
+    const bag = ensureStore().defaultBag;
     if (bag.sealedAll) return;
     for (const ctor of bag.keys) {
       const rec = bag.relics.get(ctor);

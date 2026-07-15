@@ -20,7 +20,7 @@ import {
   TokenCollisionError,
 } from '../errors/index.js';
 import { MetadataRegistry } from '../registry/index.js';
-import type { Disposable, ShadowPolicy } from '../types/index.js';
+import type { ShadowPolicy } from '../types/index.js';
 import {
   assertLifecycle,
   Lifecycle,
@@ -40,6 +40,7 @@ import type { Entry } from './entry-store.js';
 import { EntryStore } from './entry-store.js';
 import { ExposureIndex } from './exposure-index.js';
 import {
+  FLAG_DISPOSAL_TRACKED,
   FLAG_HAS_INSTANCE,
   FLAG_HAS_NO_DEPS,
   FLAG_LOCAL_DEPS_VALIDATED,
@@ -77,6 +78,10 @@ type DecoratedLifecycleSummary = {
 };
 const EMPTY_PROVIDER_SNAPSHOT: readonly ProviderConfigSnapshot[] = Object.freeze([]);
 let decoratedLifecycleSummaries = new WeakMap<object, DecoratedLifecycleSummary>();
+
+function normalizeDisposalError(error: unknown): Error {
+  return error instanceof Error ? error : new Error(String(error));
+}
 
 function providerImplementation(
   source: Provider,
@@ -251,7 +256,6 @@ export class Vault {
   private disposing = false;
   private disposalPromise?: Promise<void>;
   private readonly disposalOrder: CanonicalId[] = [];
-  private readonly disposalTracked = new Set<CanonicalId>();
   private shadowIncomingCache: Map<CanonicalId, string[]> | null = null;
   private shadowIncomingStamp = -1;
   private readonly lifecycleSummaryKey?: object;
@@ -674,10 +678,13 @@ export class Vault {
     }
 
     // PRIORITY 3: Check scope cache for scoped-lifecycle instances
+    let scopeCacheChecked = false;
+    let scopeCacheEntry: Entry | undefined;
     if (scope !== undefined) {
-      const scopeCached = scope.cache.get(id);
-      if (scopeCached !== undefined && scopeCached.flags & FLAG_HAS_INSTANCE) {
-        return scopeCached.instance as T;
+      scopeCacheEntry = scope._peekCache(id);
+      scopeCacheChecked = true;
+      if (scopeCacheEntry !== undefined && scopeCacheEntry.flags & FLAG_HAS_INSTANCE) {
+        return scopeCacheEntry.instance as T;
       }
     }
 
@@ -685,13 +692,20 @@ export class Vault {
     const local = this.store.getByCanonical(id);
     if (local !== undefined) {
       const path = new ResolutionPath();
-      return this.resolverSync.fromEntry<T>(id, path, scope);
+      return this.resolverSync.fromEntry<T>(
+        local,
+        path,
+        scope,
+        false,
+        scopeCacheChecked,
+        scopeCacheEntry
+      );
     }
 
     // Cross-vault (cold path)
     this.resolveLazyAttachments();
     const path = new ResolutionPath();
-    const x = this._crossVaultSync<T>(id, path, scope);
+    const x = this._crossVaultSync<T>(id, path, scope, scopeCacheChecked, scopeCacheEntry);
     if (x !== NOT_FOUND) return x;
 
     throw this.buildNotFoundError(id, []);
@@ -751,6 +765,93 @@ export class Vault {
     } catch (error) {
       return Promise.reject(error);
     }
+  }
+
+  /** @internal Resolve for an already-active Scope without allocating an options object. */
+  _resolveFromScope<T>(token: Token<T>, scope: Scope): T {
+    assertValidToken(token);
+    this._assertUsable();
+    const id = token.id;
+
+    const localEntry = scope.getLocalEntry(id);
+    if (localEntry !== undefined && localEntry.flags & FLAG_HAS_INSTANCE) {
+      return localEntry.instance as T;
+    }
+
+    const cached = this.cache.get(id);
+    if (cached !== undefined && (cached.flags & SINGLETON_MASK_CHECK) === SINGLETON_WITH_INSTANCE) {
+      return cached.instance as T;
+    }
+
+    const scopeCacheEntry = scope._peekCache(id, true);
+    if (scopeCacheEntry !== undefined && scopeCacheEntry.flags & FLAG_HAS_INSTANCE) {
+      return scopeCacheEntry.instance as T;
+    }
+
+    const path = new ResolutionPath();
+    const local = this.store.getByCanonical(id);
+    if (local !== undefined) {
+      return this.resolverSync.fromEntry<T>(local, path, scope, false, true, scopeCacheEntry);
+    }
+
+    this.resolveLazyAttachments();
+    const crossVault = this._crossVaultSync<T>(id, path, scope, true, scopeCacheEntry);
+    if (crossVault !== NOT_FOUND) return crossVault;
+    throw this.buildNotFoundError(id, []);
+  }
+
+  /** @internal Async counterpart; synchronous failures are adopted by Scope.resolveAsync(). */
+  _resolveFromScopeAsync<T>(token: Token<T>, scope: Scope): Promise<T> {
+    assertValidToken(token);
+    this._assertUsable();
+    const id = token.id;
+
+    const localEntry = scope.getLocalEntry(id);
+    if (localEntry !== undefined && localEntry.flags & FLAG_HAS_INSTANCE) {
+      return Promise.resolve(localEntry.instance as T);
+    }
+
+    const cached = this.cache.get(id);
+    if (cached !== undefined && (cached.flags & LIFECYCLE_MASK) === LIFECYCLE_SINGLETON) {
+      if ((cached.flags & SINGLETON_MASK_CHECK) === SINGLETON_WITH_INSTANCE) {
+        return (cached.resolvedPromise ??= Promise.resolve(cached.instance as T)) as Promise<T>;
+      }
+      if (cached.promise !== undefined) {
+        return this.resolverAsync.waitFor(cached.promise as Promise<T>);
+      }
+    }
+
+    const scopeCacheEntry = scope._peekCache(id, true);
+    if (scopeCacheEntry !== undefined && scopeCacheEntry.flags & FLAG_HAS_INSTANCE) {
+      return Promise.resolve(scopeCacheEntry.instance as T);
+    }
+
+    const path = new ResolutionPath();
+    const local = this.store.getByCanonical(id);
+    if (local !== undefined) {
+      return this.resolverAsync.fromEntry<T>(
+        local,
+        path,
+        undefined,
+        scope,
+        false,
+        true,
+        scopeCacheEntry
+      );
+    }
+
+    this.resolveLazyAttachments();
+    return this._crossVaultAsync<T>(id, path, undefined, scope, true, scopeCacheEntry).then(
+      (crossVault) => {
+        if (crossVault !== NOT_FOUND) return crossVault;
+        if (path.has(id)) {
+          throw new CircularDependencyError(
+            path.cycle(id).map((canonical) => this.describeToken(canonical))
+          );
+        }
+        throw this.buildNotFoundError(id, path.tokens);
+      }
+    );
   }
 
   /**
@@ -943,10 +1044,49 @@ export class Vault {
   /** @internal Track owned materialized singletons for LIFO disposal. */
   _trackOwnedInstance(entry: Entry): void {
     if (!(entry.flags & FLAG_OWNS_INSTANCE) || !(entry.flags & FLAG_HAS_INSTANCE)) return;
-    if (this.disposalTracked.has(entry.token)) return;
+    if (entry.flags & FLAG_DISPOSAL_TRACKED) return;
 
-    this.disposalTracked.add(entry.token);
+    entry.flags |= FLAG_DISPOSAL_TRACKED;
     this.disposalOrder.push(entry.token);
+  }
+
+  /** @internal True only while an async creation may commit into this Vault. */
+  _canCommitAsyncCreation(): boolean {
+    return !this.disposing && !this.disposed;
+  }
+
+  private _invokeInstanceDisposer(value: unknown): void | Promise<void> {
+    if (value === null || (typeof value !== 'object' && typeof value !== 'function')) return;
+
+    const candidate = value as { dispose?: () => unknown; close?: () => unknown };
+    const disposer =
+      typeof candidate.dispose === 'function'
+        ? candidate.dispose
+        : typeof candidate.close === 'function'
+          ? candidate.close
+          : undefined;
+    if (!disposer) return;
+
+    const result = disposer.call(value);
+    if (
+      result !== null &&
+      (typeof result === 'object' || typeof result === 'function') &&
+      typeof (result as PromiseLike<unknown>).then === 'function'
+    ) {
+      return Promise.resolve(result).then(() => undefined);
+    }
+  }
+
+  /** @internal Clean up a value that completed after disposal and reject its creation. */
+  async _rejectStaleAsyncCreation(entry: Entry, value: unknown): Promise<never> {
+    if (entry.flags & FLAG_OWNS_INSTANCE) {
+      try {
+        await this._invokeInstanceDisposer(value);
+      } catch (error) {
+        throw new AggregateDisposalError([normalizeDisposalError(error)]);
+      }
+    }
+    throw new ContainerDisposedError(this.name);
   }
 
   /**
@@ -981,13 +1121,14 @@ export class Vault {
    */
   clear(): void {
     this.cache.clear();
+    for (const canonical of this.disposalOrder) {
+      const tracked = this.store.getByCanonical(canonical);
+      if (tracked !== undefined) tracked.flags &= ~FLAG_DISPOSAL_TRACKED;
+    }
     this.disposalOrder.length = 0;
-    this.disposalTracked.clear();
 
-    for (const canonical of this.store.canonicalKeys()) {
-      const e = this.store.getByCanonical(canonical);
-      if (!e) continue;
-
+    for (const e of this.store.values()) {
+      e.resolvedPromise = undefined;
       // useValue registrations are configuration, not recreatable cache entries.
       if (e.flags & FLAG_VALUE_PROVIDER) {
         this._trackOwnedInstance(e);
@@ -1056,31 +1197,14 @@ export class Vault {
       if (!entry) continue;
       if (!(entry.flags & FLAG_OWNS_INSTANCE)) continue;
 
-      const instance = entry.instance as Disposable | undefined;
+      const instance = entry.instance;
       if (instance === undefined) continue;
 
-      const disposer =
-        (typeof instance === 'object' || typeof instance === 'function') &&
-        instance !== null &&
-        (typeof instance.dispose === 'function'
-          ? instance.dispose
-          : typeof instance.close === 'function'
-            ? instance.close
-            : undefined);
-
-      if (disposer) {
-        try {
-          const result = disposer.call(instance);
-          if (
-            typeof result === 'object' &&
-            typeof (result as Promise<unknown>).then === 'function'
-          ) {
-            // Wrap the promise to ensure void return type
-            pending.push((result as Promise<unknown>).then(() => undefined));
-          }
-        } catch (error) {
-          errors.push(error instanceof Error ? error : new Error(String(error)));
-        }
+      try {
+        const result = this._invokeInstanceDisposer(instance);
+        if (result) pending.push(result);
+      } catch (error) {
+        errors.push(normalizeDisposalError(error));
       }
     }
 
@@ -1089,15 +1213,15 @@ export class Vault {
       if (!entry) continue;
       entry.instance = undefined;
       entry.promise = undefined;
-      entry.flags &= ~FLAG_HAS_INSTANCE;
+      entry.resolvedPromise = undefined;
+      entry.flags &= ~(FLAG_HAS_INSTANCE | FLAG_DISPOSAL_TRACKED);
     }
+    this.disposalOrder.length = 0;
 
     // Clean up vault state
     this.cache.clear();
     this.exposure.clear();
     this._invalidateShadowCache();
-    this.disposalOrder.length = 0;
-    this.disposalTracked.clear();
 
     // Synchronous disposal path
     if (pending.length === 0) {
@@ -1524,7 +1648,9 @@ export class Vault {
   private _crossVaultSync<T>(
     token: CanonicalId,
     path: ResolutionPath,
-    scope?: Scope
+    scope: Scope | undefined,
+    scopeCacheChecked = false,
+    scopeCacheEntry?: Entry
   ): T | NotFound {
     const hit = this._findCrossVaultEntry(token);
     if (!hit) return NOT_FOUND;
@@ -1537,7 +1663,14 @@ export class Vault {
       this.cache.primeAll(token, e);
       return e.instance as T;
     }
-    const out = vault.resolverSync.fromEntry<T>(canonical, path, scope, true);
+    const out = vault.resolverSync.fromEntry<T>(
+      e,
+      path,
+      scope,
+      true,
+      scopeCacheChecked,
+      scopeCacheEntry
+    );
     if (lifecycleFlags === LIFECYCLE_SINGLETON && e.flags & FLAG_HAS_INSTANCE) {
       this.cache.primeAll(token, e);
     }
@@ -1548,8 +1681,10 @@ export class Vault {
   private async _crossVaultAsync<T>(
     token: CanonicalId,
     path: ResolutionPath,
-    signal?: AbortSignal,
-    scope?: Scope
+    signal: AbortSignal | undefined,
+    scope: Scope | undefined,
+    scopeCacheChecked = false,
+    scopeCacheEntry?: Entry
   ): Promise<T | NotFound> {
     const hit = this._findCrossVaultEntry(token);
     if (!hit) return NOT_FOUND;
@@ -1560,9 +1695,17 @@ export class Vault {
     this._validateLifecycleRulesForEntry(token, e, path);
     if (lifecycleFlags === LIFECYCLE_SINGLETON && e.flags & FLAG_HAS_INSTANCE) {
       this.cache.primeAll(token, e);
-      return e.instance as T;
+      return (e.resolvedPromise ??= Promise.resolve(e.instance as T)) as Promise<T>;
     }
-    const out = await vault.resolverAsync.fromEntry<T>(canonical, path, signal, scope, true);
+    const out = await vault.resolverAsync.fromEntry<T>(
+      e,
+      path,
+      signal,
+      scope,
+      true,
+      scopeCacheChecked,
+      scopeCacheEntry
+    );
     if (lifecycleFlags === LIFECYCLE_SINGLETON) this.cache.primeAll(token, e);
     return out;
   }
@@ -1588,7 +1731,8 @@ export class Vault {
     this._validateLifecycleRulesForEntry(token, entry, path);
   }
 
-  private _validateLifecycleRulesForEntry(
+  /** @internal Validate one consumer-to-dependency edge using an already-found dependency. */
+  _validateLifecycleRulesForEntry(
     dependencyToken: CanonicalId,
     dependencyEntry: Entry,
     path: ResolutionPath
@@ -1628,11 +1772,19 @@ export class Vault {
       consumerLifecycle === Lifecycle.Scoped && dependencyLifecycle === Lifecycle.Transient;
 
     if (violatesSingletonRule || violatesScopedRule) {
-      const chain = tokens.map((t) => this._formatTokenForDiagnostics(t));
+      const consumerDescription = `${consumerEntry.metadata.label} [${consumerToken}]`;
+      const dependencyDescription = `${dependencyEntry.metadata.label} [${dependencyToken}]`;
+      const chain = tokens.map((token) =>
+        token === consumerToken
+          ? consumerDescription
+          : token === dependencyToken
+            ? dependencyDescription
+            : this._formatTokenForDiagnostics(token)
+      );
       throw new LifecycleViolationError(
-        this._formatTokenForDiagnostics(consumerToken),
+        consumerDescription,
         consumerLifecycle,
-        this._formatTokenForDiagnostics(dependencyToken),
+        dependencyDescription,
         dependencyLifecycle,
         chain
       );
@@ -1654,33 +1806,6 @@ export class Vault {
   }
 
   /**
-   * Check scope cache for scoped instance.
-   * @returns Instance if found in scope cache, or the private miss sentinel
-   */
-  private _tryGetFromScopeCache<T>(
-    token: CanonicalId,
-    scope?: Scope,
-    path?: ResolutionPath
-  ): T | NotFound {
-    if (scope === undefined) return NOT_FOUND;
-
-    // Check scope-local registrations first (highest priority)
-    const localEntry = scope.getLocalEntry(token);
-    if (localEntry && localEntry.flags & FLAG_HAS_INSTANCE) {
-      if (path !== undefined) this._validateLifecycleRulesForEntry(token, localEntry, path);
-      return localEntry.instance as T;
-    }
-
-    // Then check scope cache for scoped-lifecycle instances
-    const scopedCached = scope.cache.get(token);
-    if (scopedCached !== undefined && scopedCached.flags & FLAG_HAS_INSTANCE) {
-      if (path !== undefined) this._validateLifecycleRulesForEntry(token, scopedCached, path);
-      return scopedCached.instance as T;
-    }
-    return NOT_FOUND;
-  }
-
-  /**
    * Resolve token from local vault registry.
    * @returns Resolved instance if registered locally, or the private miss sentinel
    */
@@ -1688,12 +1813,21 @@ export class Vault {
     token: CanonicalId,
     path: ResolutionPath,
     scope: Scope | undefined,
-    lifecycleAlreadyValidated: boolean
+    lifecycleAlreadyValidated: boolean,
+    scopeCacheChecked = false,
+    scopeCacheEntry?: Entry
   ): T | NotFound {
-    const canonical = this._hasLocalEntry(token);
-    if (canonical === undefined) return NOT_FOUND;
+    const entry = this.store.getByCanonical(token);
+    if (entry === undefined) return NOT_FOUND;
 
-    return this.resolverSync.fromEntry<T>(canonical, path, scope, lifecycleAlreadyValidated);
+    return this.resolverSync.fromEntry<T>(
+      entry,
+      path,
+      scope,
+      lifecycleAlreadyValidated,
+      scopeCacheChecked,
+      scopeCacheEntry
+    );
   }
 
   /**
@@ -1711,17 +1845,44 @@ export class Vault {
     const cachedInstance = this._tryGetFromSingletonCache<T>(token);
     if (cachedInstance !== NOT_FOUND) return cachedInstance;
 
-    // Step 2: Check scope cache
-    const scopedInstance = this._tryGetFromScopeCache<T>(token, scope, path);
-    if (scopedInstance !== NOT_FOUND) return scopedInstance;
+    // Step 2: Check scope-local and scoped cache without allocating on a miss.
+    let scopeCacheChecked = false;
+    let scopeCacheEntry: Entry | undefined;
+    if (scope !== undefined) {
+      const localEntry = scope.getLocalEntry(token);
+      if (localEntry !== undefined && localEntry.flags & FLAG_HAS_INSTANCE) {
+        this._validateLifecycleRulesForEntry(token, localEntry, path);
+        return localEntry.instance as T;
+      }
+
+      scopeCacheEntry = scope._peekCache(token);
+      scopeCacheChecked = true;
+      if (scopeCacheEntry !== undefined && scopeCacheEntry.flags & FLAG_HAS_INSTANCE) {
+        this._validateLifecycleRulesForEntry(token, scopeCacheEntry, path);
+        return scopeCacheEntry.instance as T;
+      }
+    }
 
     // Step 3: Try local resolution
-    const localInstance = this._resolveLocal<T>(token, path, scope, lifecycleAlreadyValidated);
+    const localInstance = this._resolveLocal<T>(
+      token,
+      path,
+      scope,
+      lifecycleAlreadyValidated,
+      scopeCacheChecked,
+      scopeCacheEntry
+    );
     if (localInstance !== NOT_FOUND) return localInstance;
 
     // Step 4: Try cross-vault resolution
     this.resolveLazyAttachments();
-    const crossVaultInstance = this._crossVaultSync<T>(token, path, scope);
+    const crossVaultInstance = this._crossVaultSync<T>(
+      token,
+      path,
+      scope,
+      scopeCacheChecked,
+      scopeCacheEntry
+    );
     if (crossVaultInstance !== NOT_FOUND) return crossVaultInstance;
 
     // Step 5: Token not found — but if the token is already in the stack it is a
@@ -1745,17 +1906,21 @@ export class Vault {
     path: ResolutionPath,
     signal: AbortSignal | undefined,
     scope: Scope | undefined,
-    lifecycleAlreadyValidated: boolean
+    lifecycleAlreadyValidated: boolean,
+    scopeCacheChecked = false,
+    scopeCacheEntry?: Entry
   ): Promise<T> | NotFound {
-    const canonical = this._hasLocalEntry(token);
-    if (canonical === undefined) return NOT_FOUND;
+    const entry = this.store.getByCanonical(token);
+    if (entry === undefined) return NOT_FOUND;
 
     return this.resolverAsync.fromEntry<T>(
-      canonical,
+      entry,
       path,
       signal,
       scope,
-      lifecycleAlreadyValidated
+      lifecycleAlreadyValidated,
+      scopeCacheChecked,
+      scopeCacheEntry
     );
   }
 
@@ -1781,16 +1946,34 @@ export class Vault {
       const cached = this.cache.get(token);
       if (cached !== undefined && (cached.flags & LIFECYCLE_MASK) === LIFECYCLE_SINGLETON) {
         if ((cached.flags & SINGLETON_MASK_CHECK) === SINGLETON_WITH_INSTANCE) {
-          return Promise.resolve(cached.instance as T);
+          return (cached.resolvedPromise ??= Promise.resolve(cached.instance as T)) as Promise<T>;
         }
         if (cached.promise !== undefined) {
           return this.resolverAsync.waitFor(cached.promise as Promise<T>, signal);
         }
       }
 
-      // Step 2: Probe scope cache; a public root call has no parent edge to validate.
-      const scopedInstance = this._tryGetFromScopeCache<T>(token, scope, path);
-      if (scopedInstance !== NOT_FOUND) return Promise.resolve(scopedInstance);
+      // Step 2: Probe scope-local and scoped caches without allocating on misses.
+      let scopeCacheChecked = false;
+      let scopeCacheEntry: Entry | undefined;
+      if (scope !== undefined) {
+        const localEntry = scope.getLocalEntry(token);
+        if (localEntry !== undefined && localEntry.flags & FLAG_HAS_INSTANCE) {
+          if (path !== undefined) {
+            this._validateLifecycleRulesForEntry(token, localEntry, path);
+          }
+          return Promise.resolve(localEntry.instance as T);
+        }
+
+        scopeCacheEntry = scope._peekCache(token);
+        scopeCacheChecked = true;
+        if (scopeCacheEntry !== undefined && scopeCacheEntry.flags & FLAG_HAS_INSTANCE) {
+          if (path !== undefined) {
+            this._validateLifecycleRulesForEntry(token, scopeCacheEntry, path);
+          }
+          return Promise.resolve(scopeCacheEntry.instance as T);
+        }
+      }
 
       const activePath = path ?? new ResolutionPath();
 
@@ -1800,25 +1983,32 @@ export class Vault {
         activePath,
         signal,
         scope,
-        lifecycleAlreadyValidated
+        lifecycleAlreadyValidated,
+        scopeCacheChecked,
+        scopeCacheEntry
       );
       if (localInstance !== NOT_FOUND) return localInstance;
 
       // Step 4: Try cross-vault resolution.
       this.resolveLazyAttachments();
-      return this._crossVaultAsync<T>(token, activePath, signal, scope).then(
-        (crossVaultInstance) => {
-          if (crossVaultInstance !== NOT_FOUND) return crossVaultInstance;
+      return this._crossVaultAsync<T>(
+        token,
+        activePath,
+        signal,
+        scope,
+        scopeCacheChecked,
+        scopeCacheEntry
+      ).then((crossVaultInstance) => {
+        if (crossVaultInstance !== NOT_FOUND) return crossVaultInstance;
 
-          // Step 5: Preserve cross-vault cycle diagnostics before reporting not-found.
-          if (activePath.has(token)) {
-            throw new CircularDependencyError(
-              activePath.cycle(token).map((t) => this.describeToken(t))
-            );
-          }
-          throw this.buildNotFoundError(token, activePath.tokens);
+        // Step 5: Preserve cross-vault cycle diagnostics before reporting not-found.
+        if (activePath.has(token)) {
+          throw new CircularDependencyError(
+            activePath.cycle(token).map((t) => this.describeToken(t))
+          );
         }
-      );
+        throw this.buildNotFoundError(token, activePath.tokens);
+      });
     } catch (error) {
       return Promise.reject(error);
     }

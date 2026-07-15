@@ -238,6 +238,91 @@ describe('Vault internal coverage', () => {
     expect(validatePair).not.toHaveBeenCalled();
   });
 
+  it('loads each local sync entry once and skips root edge validation', () => {
+    const Dependency = token<number>('EntryPassSyncDependency');
+    const Root = token<number>('EntryPassSyncRoot');
+    const vault = new Vault({
+      providers: [
+        { provide: Dependency, lifecycle: Lifecycle.Transient, useFactory: () => 1 },
+        {
+          provide: Root,
+          lifecycle: Lifecycle.Transient,
+          deps: [Dependency],
+          useFactory: (value) => Number(value) + 1,
+        },
+      ],
+    });
+    const get = vi.spyOn(vault.store, 'getByCanonical');
+    const has = vi.spyOn(vault.store, 'has');
+    const internal = vault as unknown as {
+      _validateLifecycleRulesForEntry: (...args: unknown[]) => void;
+    };
+    const validate = vi.spyOn(internal, '_validateLifecycleRulesForEntry');
+
+    expect(vault.resolve(Root)).toBe(2);
+    expect(has).not.toHaveBeenCalled();
+    expect(get.mock.calls.filter(([id]) => id === Root.id)).toHaveLength(1);
+    expect(get.mock.calls.filter(([id]) => id === Dependency.id)).toHaveLength(1);
+    expect(validate).not.toHaveBeenCalled();
+  });
+
+  it('loads each local async entry once and skips root edge validation', async () => {
+    const Dependency = token<number>('EntryPassAsyncDependency');
+    const Root = token<number>('EntryPassAsyncRoot');
+    const vault = new Vault({
+      providers: [
+        { provide: Dependency, lifecycle: Lifecycle.Transient, useFactory: async () => 1 },
+        {
+          provide: Root,
+          lifecycle: Lifecycle.Transient,
+          deps: [Dependency],
+          useFactory: async (value) => Number(value) + 1,
+        },
+      ],
+    });
+    const get = vi.spyOn(vault.store, 'getByCanonical');
+    const has = vi.spyOn(vault.store, 'has');
+    const internal = vault as unknown as {
+      _validateLifecycleRulesForEntry: (...args: unknown[]) => void;
+    };
+    const validate = vi.spyOn(internal, '_validateLifecycleRulesForEntry');
+
+    await expect(vault.resolveAsync(Root)).resolves.toBe(2);
+    expect(has).not.toHaveBeenCalled();
+    expect(get.mock.calls.filter(([id]) => id === Root.id)).toHaveLength(1);
+    expect(get.mock.calls.filter(([id]) => id === Dependency.id)).toHaveLength(1);
+    expect(validate).not.toHaveBeenCalled();
+  });
+
+  it('validates a deferred edge with the passed dependency entry', () => {
+    const Dependency = token('EntryPassDeferredTransient');
+    const Root = token('EntryPassDeferredSingleton');
+    const vault = new Vault({
+      providers: [
+        {
+          provide: Root,
+          lifecycle: Lifecycle.Singleton,
+          deps: [Dependency],
+          useFactory: () => 'root',
+        },
+        {
+          provide: Dependency,
+          lifecycle: Lifecycle.Transient,
+          useFactory: () => 'dependency',
+        },
+      ],
+    });
+    const get = vi.spyOn(vault.store, 'getByCanonical');
+    const internal = vault as unknown as {
+      _validateLifecycleRulesForEntry: (...args: unknown[]) => void;
+    };
+    const validate = vi.spyOn(internal, '_validateLifecycleRulesForEntry');
+
+    expect(() => vault.resolve(Root)).toThrow(LifecycleViolationError);
+    expect(validate).toHaveBeenCalledTimes(1);
+    expect(get.mock.calls.filter(([id]) => id === Dependency.id)).toHaveLength(1);
+  });
+
   it('primes each local singleton once during sync materialization', () => {
     const Dependency = token<number>('PrimeSyncDependency');
     const Root = token<number>('PrimeSyncRoot');

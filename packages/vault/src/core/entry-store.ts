@@ -37,7 +37,8 @@ import type { CanonicalId } from './token.js';
  *  - summons: injection tokens for ctor arguments declared via @Summon() (kept as readonly)
  *  - aliases: alternative names (strings) that should map to the canonical token
  *  - instance: materialized singleton instance (when applicable)
- *  - promise: pending creation promise for async singletons
+ *  - promise: pending creation promise for async singletons or scoped clones
+ *  - resolvedPromise: reusable fulfilled Promise for a materialized singleton
  *  - flags: bitfield for fast runtime checks (singleton, hasInstance, etc.)
  */
 export type Entry = {
@@ -50,8 +51,10 @@ export type Entry = {
   summons: readonly (CanonicalId | undefined)[];
   aliases: readonly string[];
   instance?: unknown;
-  /** Pending creation for async singletons. */
+  /** Pending creation for async singletons or scoped clones. */
   promise?: Promise<unknown>;
+  /** Reusable fulfilled Promise for a successfully materialized singleton only. */
+  resolvedPromise?: Promise<unknown>;
   flags: number;
 };
 
