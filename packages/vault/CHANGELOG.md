@@ -1,3 +1,17 @@
+## @ceryn/vault-v2.5.0 (2026-07-16)
+
+* docs(vault): record bootstrap performance ([66e351d](https://github.com/Dimzdey/ceryn/commit/66e351d))
+* docs(vault): record focused performance gains ([847c7e5](https://github.com/Dimzdey/ceryn/commit/847c7e5))
+* perf(vault): add focused benchmark suite ([2654592](https://github.com/Dimzdey/ceryn/commit/2654592))
+* perf(vault): certify resolvable graphs ([33c2d54](https://github.com/Dimzdey/ceryn/commit/33c2d54))
+* perf(vault): expose fresh bootstrap samples ([02c6195](https://github.com/Dimzdey/ceryn/commit/02c6195))
+* perf(vault): fast-path cached tryResolve ([2f440ab](https://github.com/Dimzdey/ceryn/commit/2f440ab))
+* perf(vault): optimize resolution hot paths ([2aa86ce](https://github.com/Dimzdey/ceryn/commit/2aa86ce))
+* perf(vault): reuse bound scope promises ([0aa5e6e](https://github.com/Dimzdey/ceryn/commit/0aa5e6e))
+* revert: remove canResolve certification ([cfadabd](https://github.com/Dimzdey/ceryn/commit/cfadabd))
+* fix(vault): invalidate resolvability certificates ([d5af910](https://github.com/Dimzdey/ceryn/commit/d5af910))
+* feat(vault): performance ([fe627c7](https://github.com/Dimzdey/ceryn/commit/fe627c7))
+
 ## @ceryn/vault-v2.4.1 (2026-06-15)
 
 * fix(vault): clean up async resource leaks ([d005ae6](https://github.com/Dimzdey/ceryn/commit/d005ae6))

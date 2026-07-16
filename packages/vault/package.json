@@ -1,6 +1,6 @@
 {
   "name": "@ceryn/vault",
-  "version": "2.4.1",
+  "version": "2.5.0",
   "description": "Zero-reflection dependency injection container for TypeScript",
   "type": "module",
   "main": "./dist/index.js",
