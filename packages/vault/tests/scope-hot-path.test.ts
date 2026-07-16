@@ -149,7 +149,32 @@ describe('Scope hot paths', () => {
     expect(a).toBe(b);
   });
 
-  it('distinguishes a cached undefined value from a miss and preserves overrides', async () => {
+  it('tryResolve cached singleton hits bypass resolvability graph validation', () => {
+    const Value = token<object>('TryResolveCachedSingleton');
+    const expected = {};
+    const vault = new Vault({ providers: [{ provide: Value, useValue: expected }] });
+    const scope = vault.createScope();
+    expect(scope.resolve(Value)).toBe(expected);
+    const validate = vi.spyOn(vault, '_canResolveInScope');
+
+    expect(scope.tryResolve(Value)).toBe(expected);
+    expect(validate).not.toHaveBeenCalled();
+  });
+
+  it('tryResolve cached scoped hits bypass resolvability graph validation', () => {
+    const Value = token<object>('TryResolveCachedScoped');
+    const vault = new Vault({
+      providers: [{ provide: Value, lifecycle: Lifecycle.Scoped, useFactory: () => ({}) }],
+    });
+    const scope = vault.createScope();
+    const expected = scope.resolve(Value);
+    const validate = vi.spyOn(vault, '_canResolveInScope');
+
+    expect(scope.tryResolve(Value)).toBe(expected);
+    expect(validate).not.toHaveBeenCalled();
+  });
+
+  it('cached undefined tryResolve hits bypass validation and remain distinct from a miss', async () => {
     const Value = token<number | undefined>('ScopedUndefined');
     const factory = vi.fn(() => undefined);
     const vault = new Vault({
@@ -159,6 +184,11 @@ describe('Scope hot paths', () => {
 
     expect(scope.resolve(Value)).toBeUndefined();
     expect(scope.resolve(Value)).toBeUndefined();
+    expect(factory).toHaveBeenCalledTimes(1);
+
+    const validate = vi.spyOn(vault, '_canResolveInScope');
+    expect(scope.tryResolve(Value)).toBeUndefined();
+    expect(validate).not.toHaveBeenCalled();
     expect(factory).toHaveBeenCalledTimes(1);
 
     const overrideScope = vault.createScope();

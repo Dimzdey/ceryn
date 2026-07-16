@@ -53,7 +53,7 @@ import {
 import { ResolverAsync } from './resolver-async.js';
 import { ResolverSync } from './resolver-sync.js';
 import { ResolutionPath } from './resolution-path.js';
-import { Scope } from './scope.js';
+import { SCOPE_CACHE_MISS, Scope } from './scope.js';
 import { SingletonCache } from './singleton-cache.js';
 import { isToken, type CanonicalId, type Token } from './token.js';
 interface LegacyConfig {
@@ -798,6 +798,34 @@ export class Vault {
     const crossVault = this._crossVaultSync<T>(id, path, scope, true, scopeCacheEntry);
     if (crossVault !== NOT_FOUND) return crossVault;
     throw this.buildNotFoundError(id, []);
+  }
+
+  /**
+   * @internal Cached-only Scope probe. The sentinel is defined in scope.ts so
+   * Scope can distinguish a materialized undefined value without allocating a
+   * result wrapper; Scope's Vault import remains type-only, avoiding a cycle.
+   */
+  _tryResolveCachedFromScope<T>(token: Token<T>, scope: Scope): T | typeof SCOPE_CACHE_MISS {
+    assertValidToken(token);
+    this._assertUsable();
+    const id = token.id;
+
+    const localEntry = scope.getLocalEntry(id);
+    if (localEntry !== undefined && localEntry.flags & FLAG_HAS_INSTANCE) {
+      return localEntry.instance as T;
+    }
+
+    const cached = this.cache.get(id);
+    if (cached !== undefined && (cached.flags & SINGLETON_MASK_CHECK) === SINGLETON_WITH_INSTANCE) {
+      return cached.instance as T;
+    }
+
+    const scopeCacheEntry = scope._peekCache(id, true);
+    if (scopeCacheEntry !== undefined && scopeCacheEntry.flags & FLAG_HAS_INSTANCE) {
+      return scopeCacheEntry.instance as T;
+    }
+
+    return SCOPE_CACHE_MISS;
   }
 
   /** @internal Async counterpart; synchronous failures are adopted by Scope.resolveAsync(). */

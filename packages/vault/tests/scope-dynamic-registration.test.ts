@@ -8,7 +8,7 @@
  * - override(): Replace existing registrations
  */
 
-import { beforeEach, describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { Container } from '../src/api/container';
 import type { Scope } from '../src/core/scope';
 import { token } from '../src/core/token';
@@ -193,12 +193,14 @@ describe('Scope Dynamic Registration - Phase 0.1', () => {
   });
 
   describe('tryResolve()', () => {
-    it('should return value for registered tokens', () => {
+    it('tryResolve cached scope-local hits bypass resolvability graph validation', () => {
       const config = new Config();
       scope.provide(ConfigT, config);
+      const validate = vi.spyOn(vault, '_canResolveInScope');
 
       const resolved = scope.tryResolve(ConfigT);
       expect(resolved).toBe(config);
+      expect(validate).not.toHaveBeenCalled();
     });
 
     it('should return undefined for unregistered tokens', () => {

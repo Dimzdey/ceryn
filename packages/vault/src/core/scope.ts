@@ -81,6 +81,9 @@ const EMPTY_DEPS: readonly CanonicalId[] = Object.freeze([] as CanonicalId[]);
 const EMPTY_ALIASES: readonly string[] = Object.freeze([] as string[]);
 const EMPTY_SUMMONS: readonly (CanonicalId | undefined)[] = Object.freeze([]);
 
+/** @internal Shared miss marker for Vault's cached-only Scope probe. */
+export const SCOPE_CACHE_MISS = Symbol('ceryn.scopeCacheMiss');
+
 export interface ScopeProvideOptions {
   /**
    * Whether this scope owns the value and should dispose it when the scope ends.
@@ -329,12 +332,14 @@ export class Scope {
   tryResolve<T>(token: Token<T>): T | undefined {
     if (this.disposed) return undefined;
 
-    const localEntry = this.localRegistrations?.get(token.id);
-    if (localEntry && localEntry.flags & FLAG_HAS_INSTANCE) {
-      return localEntry.instance as T;
+    if (!this.vault) {
+      const localEntry = this.localRegistrations?.get(token.id);
+      if (localEntry && localEntry.flags & FLAG_HAS_INSTANCE) return localEntry.instance as T;
+      return undefined;
     }
 
-    if (!this.vault) return undefined;
+    const cached = this.vault._tryResolveCachedFromScope(token, this);
+    if (cached !== SCOPE_CACHE_MISS) return cached;
     if (!this.vault._canResolveInScope(token, this)) return undefined;
 
     return this.resolve(token);
