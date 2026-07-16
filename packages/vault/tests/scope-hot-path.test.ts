@@ -7,6 +7,20 @@ import { Vault } from '../src/core/vault.js';
 import { Lifecycle } from '../src/types/types.js';
 
 describe('Scope hot paths', () => {
+  it('returns the bound async promise without wrapping it', async () => {
+    const Value = token<number>('BoundAsyncPromise');
+    const vault = new Vault({ providers: [{ provide: Value, useValue: 1 }] });
+    const scope = vault.createScope();
+    const sentinel = Promise.resolve(1);
+
+    vi.spyOn(vault, '_resolveFromScopeAsync').mockReturnValue(sentinel);
+
+    const result = scope.resolveAsync(Value);
+
+    expect(result).toBe(sentinel);
+    await expect(result).resolves.toBe(1);
+  });
+
   it('delegates through internal Vault entry points without public options wrappers', async () => {
     const SyncValue = token<number>('InternalScopeSync');
     const AsyncValue = token<number>('InternalScopeAsync');

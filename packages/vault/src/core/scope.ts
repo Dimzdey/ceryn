@@ -402,13 +402,19 @@ export class Scope {
    *
    * @internal Used by resolver, not intended for direct use
    */
-  async resolveAsync<T>(token: Token<T>): Promise<T> {
-    if (this.disposed) throw new ScopeDisposedError();
-    if (this.vault) return this.vault._resolveFromScopeAsync(token, this);
+  resolveAsync<T>(token: Token<T>): Promise<T> {
+    try {
+      if (this.disposed) return Promise.reject(new ScopeDisposedError());
+      if (this.vault) return this.vault._resolveFromScopeAsync(token, this);
 
-    const localEntry = this.localRegistrations?.get(token.id);
-    if (localEntry && localEntry.flags & FLAG_HAS_INSTANCE) return localEntry.instance as T;
-    throw new Error(`Token not found: ${String(token)}`);
+      const localEntry = this.getLocalEntry(token.id);
+      if (localEntry && localEntry.flags & FLAG_HAS_INSTANCE) {
+        return Promise.resolve(localEntry.instance as T);
+      }
+      return Promise.reject(new Error(`Token not found: ${String(token)}`));
+    } catch (error) {
+      return Promise.reject(error);
+    }
   }
 
   /**

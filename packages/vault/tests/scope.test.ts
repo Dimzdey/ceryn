@@ -80,7 +80,7 @@ describe('Scope', () => {
     expect(scope.disposeSync()).toBeUndefined();
   });
 
-  it('preserves scope disposal errors on creating and non-creating paths', async () => {
+  it('preserves scope disposal errors and keeps async failures asynchronous', async () => {
     const Value = token<number>('DisposedScopeFastPath');
     const vault = new Vault({
       providers: [{ provide: Value, lifecycle: Lifecycle.Scoped, useFactory: () => 1 }],
@@ -93,7 +93,13 @@ describe('Scope', () => {
     expect(() => {
       scopeAsync = scope.resolveAsync(Value);
     }).not.toThrow();
-    await expect(scopeAsync).rejects.toThrow(ScopeDisposedError);
+    expect(scopeAsync).toBeInstanceOf(Promise);
+    const scopeRejection = await scopeAsync!.catch((error: unknown) => error);
+    expect(scopeRejection).toBeInstanceOf(ScopeDisposedError);
+    expect(scopeRejection).toMatchObject({
+      name: 'ScopeDisposedError',
+      message: new ScopeDisposedError().message,
+    });
     expect(() => vault.resolve(Value, { scope })).toThrow(ScopeDisposedError);
     await expect(vault.resolveAsync(Value, { scope })).rejects.toThrow(ScopeDisposedError);
   });
@@ -103,25 +109,46 @@ describe('Scope', () => {
     const vault = new Vault({ providers: [{ provide: Value, useValue: 1 }] });
     const scope = vault.createScope();
     scope.provide(Value, 2);
+    const invalidToken = { id: Value.id } as never;
     let invalid: Promise<unknown> | undefined;
 
     expect(() => {
-      invalid = scope.resolveAsync({ id: Value.id } as never);
+      invalid = scope.resolveAsync(invalidToken);
     }).not.toThrow();
-    await expect(invalid).rejects.toThrow(InvalidTokenError);
+    expect(invalid).toBeInstanceOf(Promise);
+    const invalidRejection = await invalid!.catch((error: unknown) => error);
+    expect(invalidRejection).toBeInstanceOf(InvalidTokenError);
+    expect(invalidRejection).toMatchObject({
+      name: 'InvalidTokenError',
+      message: new InvalidTokenError(invalidToken).message,
+      token: invalidToken,
+    });
 
     vault.dispose();
     let disposedVault: Promise<unknown> | undefined;
     expect(() => {
       disposedVault = scope.resolveAsync(Value);
     }).not.toThrow();
-    await expect(disposedVault).rejects.toThrow(ContainerDisposedError);
+    expect(disposedVault).toBeInstanceOf(Promise);
+    const vaultRejection = await disposedVault!.catch((error: unknown) => error);
+    expect(vaultRejection).toBeInstanceOf(ContainerDisposedError);
+    expect(vaultRejection).toMatchObject({
+      name: 'ContainerDisposedError',
+      message: new ContainerDisposedError('Module').message,
+      vaultName: 'Module',
+    });
 
     const detached = new Scope();
     let missingVault: Promise<unknown> | undefined;
     expect(() => {
       missingVault = detached.resolveAsync(Value);
     }).not.toThrow();
-    await expect(missingVault).rejects.toThrow('Token not found');
+    expect(missingVault).toBeInstanceOf(Promise);
+    const missingRejection = await missingVault!.catch((error: unknown) => error);
+    expect(missingRejection).toBeInstanceOf(Error);
+    expect(missingRejection).toMatchObject({
+      name: 'Error',
+      message: `Token not found: ${String(Value)}`,
+    });
   });
 });
