@@ -238,6 +238,7 @@ export class Vault {
   readonly importedModules: Vault[] = [];
   private lazyImportClasses: Constructor[] = [];
   private lazyImportsResolved = false; // flip only after successful compute()
+  private attachmentGeneration = Symbol();
 
   // NOTE: scratchStack was removed — each resolve() call now allocates a fresh
   // stack to avoid re-entrancy corruption when factories call vault.resolve().
@@ -967,7 +968,7 @@ export class Vault {
 
   /** @internal Scope-aware resolvability check used by Scope.tryResolve(). */
   _canResolveInScope<T>(token: Token<T>, scope: Scope): boolean {
-    if (scope._isResolvableCertified(token.id)) return true;
+    if (scope._isResolvableCertified(token.id, this.attachmentGeneration)) return true;
     if (!this._hasVisibleToken(token.id)) return false;
 
     try {
@@ -977,7 +978,9 @@ export class Vault {
         false,
         scope
       );
-      if (entirelyLocal && this.entriesSealed) scope._certifyResolvable(token.id);
+      if (entirelyLocal && this.entriesSealed) {
+        scope._certifyResolvable(token.id, this.attachmentGeneration);
+      }
       return true;
     } catch (error) {
       if (!this._isExpectedCanResolveFailure(error)) throw error;
@@ -2088,6 +2091,7 @@ export class Vault {
     }
 
     if (this.importedModules.length !== initialImportCount) {
+      this.attachmentGeneration = Symbol();
       for (const entry of this.store.values()) entry.flags &= ~FLAG_RESOLVABLE;
     }
 

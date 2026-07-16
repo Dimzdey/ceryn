@@ -134,6 +134,9 @@ export class Scope {
   /** Positive scope-aware resolvability results, keyed by token and generation. */
   private resolvabilityCertificates?: Map<CanonicalId, number>;
 
+  /** Vault attachment stamp shared by every certificate currently in the map. */
+  private certificateAttachmentGeneration?: symbol;
+
   /**
    * Reference to the parent vault for resolution delegation.
    * Injected during construction to enable scope-based resolution.
@@ -276,6 +279,15 @@ export class Scope {
       }
     }
 
+    this.advanceRegistrationGeneration();
+  }
+
+  private advanceRegistrationGeneration(): void {
+    if (this.registrationGeneration >= Number.MAX_SAFE_INTEGER) {
+      this.clearResolvabilityCertificates();
+      this.registrationGeneration = 0;
+      return;
+    }
     this.registrationGeneration++;
   }
 
@@ -322,18 +334,26 @@ export class Scope {
   }
 
   /** @internal Check a positive scope-aware certificate without allocating. */
-  _isResolvableCertified(canonical: CanonicalId): boolean {
-    return this.resolvabilityCertificates?.get(canonical) === this.registrationGeneration;
+  _isResolvableCertified(canonical: CanonicalId, vaultStamp: symbol): boolean {
+    return (
+      this.certificateAttachmentGeneration === vaultStamp &&
+      this.resolvabilityCertificates?.get(canonical) === this.registrationGeneration
+    );
   }
 
   /** @internal Record a positive scope-aware certificate lazily. */
-  _certifyResolvable(canonical: CanonicalId): void {
+  _certifyResolvable(canonical: CanonicalId, vaultStamp: symbol): void {
+    if (this.certificateAttachmentGeneration !== vaultStamp) {
+      this.clearResolvabilityCertificates();
+      this.certificateAttachmentGeneration = vaultStamp;
+    }
     (this.resolvabilityCertificates ??= new Map()).set(canonical, this.registrationGeneration);
   }
 
   private clearResolvabilityCertificates(): void {
     this.resolvabilityCertificates?.clear();
     this.resolvabilityCertificates = undefined;
+    this.certificateAttachmentGeneration = undefined;
   }
 
   /**

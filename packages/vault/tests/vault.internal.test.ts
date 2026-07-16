@@ -147,6 +147,62 @@ describe('Vault internal coverage', () => {
       expect(validate.mock.calls.filter(([canonical]) => canonical === Root.id)).toHaveLength(2);
       expect(rootEntry.flags & (1 << 8)).toBe(0);
     });
+
+    it('revalidates a scope certificate when a lazy attachment changes exposure', () => {
+      const LocalDependency = token<number>('LazyScopeCertificateLocalDependency');
+      const ForeignDependency = token<number>('LazyScopeCertificateForeignDependency');
+      const Root = token<number>('LazyScopeCertificateConsumer');
+      const producer = new Vault({
+        providers: [
+          {
+            provide: ForeignDependency,
+            lifecycle: Lifecycle.Transient,
+            useFactory: () => 2,
+          },
+        ],
+        exports: [ForeignDependency],
+      });
+      const consumer = new Vault({
+        providers: [
+          { provide: LocalDependency, useValue: 1 },
+          {
+            provide: Root,
+            deps: [LocalDependency],
+            useFactory: (dependency: unknown) => Number(dependency),
+          },
+        ],
+      });
+      const scope = consumer.createScope();
+      const rootEntry = consumer.store.getByCanonical(Root.id);
+      if (!rootEntry) throw new Error('expected the local root entry');
+      const internal = consumer as unknown as {
+        lazyImportClasses: unknown[];
+        lazyImportsResolved: boolean;
+        lazyResolver: () => Vault;
+        resolveLazyAttachments(): void;
+        _canResolveInScope(token: unknown, scope: unknown): boolean;
+        _validateResolvableGraph(
+          canonical: CanonicalId,
+          path: ResolutionPath,
+          isRoot: boolean
+        ): boolean;
+      };
+      const validate = vi.spyOn(internal, '_validateResolvableGraph');
+
+      expect(internal._canResolveInScope(Root, scope)).toBe(true);
+      expect(internal._canResolveInScope(Root, scope)).toBe(true);
+      expect(validate.mock.calls.filter(([canonical]) => canonical === Root.id)).toHaveLength(1);
+
+      class LazyProducer {}
+      rootEntry.factoryDeps = [ForeignDependency.id];
+      internal.lazyImportClasses = [LazyProducer];
+      internal.lazyImportsResolved = false;
+      internal.lazyResolver = () => producer;
+      internal.resolveLazyAttachments();
+
+      expect(internal._canResolveInScope(Root, scope)).toBe(false);
+      expect(validate.mock.calls.filter(([canonical]) => canonical === Root.id)).toHaveLength(2);
+    });
   });
 
   it('exposes decorated constructor via getVaultClass()', () => {

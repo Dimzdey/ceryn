@@ -268,6 +268,42 @@ describe('Scope Dynamic Registration - Phase 0.1', () => {
       expect(localScope.tryResolve(ConsumerT)).toBeUndefined();
     });
 
+    it('invalidates certification when registration generation wraps safely', () => {
+      const DependencyT = token<number>('ScopeCertificateBoundaryDependency');
+      const ConsumerT = token<number>('ScopeCertificateBoundaryConsumer');
+      const localVault = new Vault({
+        providers: [
+          { provide: DependencyT, useValue: 1 },
+          {
+            provide: ConsumerT,
+            deps: [DependencyT],
+            useFactory: (dependency: unknown) => Number(dependency) + 1,
+          },
+        ],
+      });
+      const localScope = localVault.createScope();
+      const internalVault = localVault as unknown as {
+        _canResolveInScope(token: unknown, scope: Scope): boolean;
+      };
+      const internalScope = localScope as unknown as {
+        registrationGeneration: number;
+        resolvabilityCertificates?: Map<string, number>;
+      };
+
+      internalScope.registrationGeneration = Number.MAX_SAFE_INTEGER;
+      expect(internalVault._canResolveInScope(ConsumerT, localScope)).toBe(true);
+      expect(internalScope.resolvabilityCertificates?.get(ConsumerT.id)).toBe(
+        Number.MAX_SAFE_INTEGER
+      );
+
+      localScope.override(DependencyT, 2);
+
+      expect(Number.isSafeInteger(internalScope.registrationGeneration)).toBe(true);
+      expect(internalScope.registrationGeneration).toBe(0);
+      expect(internalVault._canResolveInScope(ConsumerT, localScope)).toBe(false);
+      expect(internalScope.resolvabilityCertificates?.has(ConsumerT.id) ?? false).toBe(false);
+    });
+
     it('tryResolve cached scope-local hits bypass resolvability graph validation', () => {
       const config = new Config();
       scope.provide(ConfigT, config);
