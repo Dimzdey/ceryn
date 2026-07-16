@@ -24,9 +24,9 @@ This takes longer than bundling candidates, but it makes each gain attributable 
 
 A candidate is a supported improvement only when all conditions hold:
 
-- The target median-of-medians improves by at least 5%.
-- At least three after-process medians beat the best before-process median.
-- No protected path satisfies the inverse supported-regression rule: its median-of-medians worsens by more than 5% and at least three after-process medians are worse than the worst before-process median.
+- The target median-of-medians improves by at least 5%: the after median-of-medians is less than or equal to `before * 0.95`.
+- At least three after-process medians are strictly lower than the best before-process median.
+- No protected path satisfies the inverse supported-regression rule: its after median-of-medians is greater than or equal to `before * 1.05` and at least three after-process medians are strictly worse than the worst before-process median.
 - All correctness and structural gates pass.
 
 Results that satisfy only one performance predicate are inconclusive. Unsupported or inconclusive production changes are removed.
