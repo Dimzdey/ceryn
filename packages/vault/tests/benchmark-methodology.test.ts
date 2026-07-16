@@ -28,6 +28,16 @@ describe('warm-process benchmark methodology', () => {
     expect(source).toContain('BENCH_HISTOGRAM');
   });
 
+  it('emits raw split samples for the Ceryn fresh-container profile', () => {
+    expect(source).toContain("suite: 'vault-fresh-container'");
+    expect(source).toContain("name: 'container boot'");
+    expect(source).toContain("name: 'first request'");
+    expect(source).toContain("name: 'combined fresh container + first request'");
+    expect(source).toContain('combinedSamplesNs');
+    expect(source).toContain('BENCH_FRESH_ITERATIONS');
+    expect(source).toContain('BENCH_OUTPUT_JSON');
+  });
+
   it('does not publish same-process retained heap as a headline result', () => {
     expect(source).not.toContain(
       '=== Approximate retained heap after cold boot + first request ==='

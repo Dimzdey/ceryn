@@ -93,7 +93,7 @@ type CtrlAPI = { handle: () => string };
 // │ Ceryn adapter                                                           │
 // ╰──────────────────────────────────────────────────────────────────────────╯
 
-function buildCerynAdapter(): Adapter {
+function buildCerynAdapter(endpointSeed = 1337): Adapter {
   MetadataRegistry.reset();
 
   const LoggerT = token<Logger>('Logger');
@@ -348,7 +348,7 @@ function buildCerynAdapter(): Adapter {
 
   let cold: ReturnType<typeof buildVault> | null = null;
   let warm: ReturnType<typeof buildVault> | null = null;
-  const epGen = endpointStream();
+  const epGen = endpointStream(endpointSeed);
 
   return {
     name: 'Ceryn',
@@ -1047,32 +1047,48 @@ function packageVersions(): string | undefined {
 }
 
 function profileCerynFreshContainerPath(): void {
-  const adapter = buildCerynAdapter();
-  const iterations = Number.parseInt(
-    process.env.BENCH_FRESH_ITERATIONS ?? process.env.BENCH_COLD_ITERATIONS ?? '100000',
-    10
+  const iterations = positiveEnv(
+    'BENCH_FRESH_ITERATIONS',
+    positiveEnv('BENCH_COLD_ITERATIONS', 100_000)
   );
-  const bootSamples: number[] = [];
-  const firstRequestSamples: number[] = [];
+  const seed = Number.parseInt(process.env.BENCH_SEED ?? '42', 10) >>> 0;
+  const adapter = buildCerynAdapter(seed);
+  const bootSamplesNs: number[] = [];
+  const firstRequestSamplesNs: number[] = [];
+  const combinedSamplesNs: number[] = [];
 
-  for (let i = 0; i < 2_000; i++) {
+  for (let index = 0; index < 2_000; index++) {
     adapter.coldBoot();
     adapter.firstRequest();
   }
 
-  for (let i = 0; i < iterations; i++) {
+  for (let index = 0; index < iterations; index++) {
     const bootStart = process.hrtime.bigint();
     adapter.coldBoot();
     const bootEnd = process.hrtime.bigint();
     adapter.firstRequest();
     const requestEnd = process.hrtime.bigint();
 
-    bootSamples.push(Number(bootEnd - bootStart));
-    firstRequestSamples.push(Number(requestEnd - bootEnd));
+    bootSamplesNs.push(Number(bootEnd - bootStart));
+    firstRequestSamplesNs.push(Number(requestEnd - bootEnd));
+    combinedSamplesNs.push(Number(requestEnd - bootStart));
   }
 
-  const boot = calculatePercentiles(bootSamples);
-  const firstRequest = calculatePercentiles(firstRequestSamples);
+  const tasks = [
+    { name: 'container boot', samplesNs: bootSamplesNs },
+    { name: 'first request', samplesNs: firstRequestSamplesNs },
+    { name: 'combined fresh container + first request', samplesNs: combinedSamplesNs },
+  ];
+  const output = {
+    suite: 'vault-fresh-container',
+    seed,
+    iterations,
+    environment: { node: process.version, cpu: cpus()[0]?.model ?? 'unknown' },
+    tasks,
+  };
+
+  const boot = calculatePercentiles(bootSamplesNs);
+  const firstRequest = calculatePercentiles(firstRequestSamplesNs);
   console.log('=== Ceryn Fresh-Container Profile (warm process) ===');
   console.log(`Iterations: ${iterations.toLocaleString()}`);
   console.log(
@@ -1081,6 +1097,9 @@ function profileCerynFreshContainerPath(): void {
   console.log(
     `First request: p50 ${formatNs(firstRequest.p50)}, p95 ${formatNs(firstRequest.p95)}, mean ${formatNs(firstRequest.mean)}`
   );
+  if (process.env.BENCH_OUTPUT_JSON) {
+    writeFileSync(resolve(process.env.BENCH_OUTPUT_JSON), `${JSON.stringify(output, null, 2)}\n`);
+  }
 }
 
 async function main() {

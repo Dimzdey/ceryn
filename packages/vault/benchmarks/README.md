@@ -55,7 +55,7 @@ All frameworks are imported into one Node process. Adapter classes and decorator
 | Scoped 1k                                        | Create 1,000 child scopes, provide a request ID, resolve one request-scoped service, consume it, and perform idiomatic synchronous teardown where available.  |
 | Async cached singleton 100                       | Await a pre-created async singleton 100 times. Only adapters with native asynchronous resolution participate.                                                |
 
-This suite does not measure process startup, module import, or a cold V8 runtime. The focused `BENCH_PROFILE=ceryn-cold` compatibility profile is also a warmed-process container/first-resolution split; `BENCH_FRESH_ITERATIONS` sets its sample count (`BENCH_COLD_ITERATIONS` remains accepted).
+This suite does not measure process startup, module import, or a cold V8 runtime. The focused `BENCH_PROFILE=ceryn-cold` compatibility profile runs inside an already-warm process and measures a fresh decorated container per iteration, split into container boot and first request. `BENCH_FRESH_ITERATIONS` sets its sample count (`BENCH_COLD_ITERATIONS` remains accepted). When `BENCH_OUTPUT_JSON` is set, the profile emits the split and combined raw nanosecond samples.
 
 Tinybench reports task latency in milliseconds. The suite converts samples to nanoseconds and reports both batch and per-operation medians. Tail values require at least ten expected observations in the tail:
 
