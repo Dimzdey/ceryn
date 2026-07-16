@@ -12,6 +12,18 @@ npm run bench -w packages/vault
 npm run bench:warm -w packages/vault
 ```
 
+Run the focused Ceryn-only suite:
+
+```bash
+npm run bench:focused -w packages/vault
+```
+
+Each focused task measures a fixed batch of operations named in the output. Tinybench records
+batch latency in milliseconds; the JSON output converts each raw sample to nanoseconds and keeps
+it in `samplesNs`. Divide a sample by the operation count in its task name (1,000 or 100) when a
+per-operation observation is needed. Set `BENCH_OUTPUT_JSON` to retain the raw samples together
+with the suite name, seed, and environment.
+
 Run independent process-level timing, semantic-contract, and retained-memory measurements:
 
 ```bash

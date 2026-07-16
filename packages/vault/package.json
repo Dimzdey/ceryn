@@ -29,6 +29,7 @@
     "typecheck": "tsc --noEmit",
     "clean": "rm -rf dist",
     "bench": "tsx --tsconfig tsconfig.bench.json --expose-gc benchmarks/benchmark.ts",
+    "bench:focused": "tsx --tsconfig tsconfig.bench.json benchmarks/focused.ts",
     "bench:warm": "tsx --tsconfig tsconfig.bench.json --expose-gc benchmarks/benchmark.ts",
     "bench:isolated": "npm run build && node --expose-gc benchmarks/isolated/orchestrator.mjs"
   },
