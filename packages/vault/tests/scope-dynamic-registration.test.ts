@@ -193,6 +193,81 @@ describe('Scope Dynamic Registration - Phase 0.1', () => {
   });
 
   describe('tryResolve()', () => {
+    it('invalidates certification after scope provide and override mutations', () => {
+      const DependencyT = token<number>('ScopeCertificateDependency');
+      const UnrelatedT = token<number>('ScopeCertificateUnrelated');
+      const ConsumerT = token<number>('ScopeCertificateConsumer');
+      const localVault = new Vault({
+        providers: [
+          {
+            provide: ConsumerT,
+            lifecycle: Lifecycle.Transient,
+            deps: [DependencyT],
+            useFactory: (dependency: unknown) => Number(dependency) + 1,
+          },
+        ],
+      });
+      const localScope = localVault.createScope();
+      const internalVault = localVault as unknown as {
+        _validateResolvableGraph: (...args: unknown[]) => boolean;
+      };
+      const internalScope = localScope as unknown as {
+        registrationGeneration: number;
+        resolvabilityCertificates?: Map<string, number>;
+      };
+
+      localScope.provide(DependencyT, 1);
+      expect(internalScope.registrationGeneration).toBe(1);
+      const validate = vi.spyOn(internalVault, '_validateResolvableGraph');
+
+      expect(localScope.tryResolve(ConsumerT)).toBe(2);
+      expect(localScope.tryResolve(ConsumerT)).toBe(2);
+      expect(validate.mock.calls.filter(([canonical]) => canonical === ConsumerT.id)).toHaveLength(
+        1
+      );
+
+      localScope.provide(UnrelatedT, 2);
+      expect(internalScope.registrationGeneration).toBe(2);
+      expect(localScope.tryResolve(ConsumerT)).toBe(2);
+      expect(validate.mock.calls.filter(([canonical]) => canonical === ConsumerT.id)).toHaveLength(
+        2
+      );
+
+      localScope.override(UnrelatedT, 3);
+      expect(internalScope.registrationGeneration).toBe(3);
+      expect(localScope.tryResolve(ConsumerT)).toBe(2);
+      expect(validate.mock.calls.filter(([canonical]) => canonical === ConsumerT.id)).toHaveLength(
+        3
+      );
+      expect(internalScope.resolvabilityCertificates?.size).toBe(1);
+
+      localScope.disposeSync();
+      expect(internalScope.resolvabilityCertificates).toBeUndefined();
+    });
+
+    it('invalidates certification when an override makes the graph lifecycle-invalid', () => {
+      const DependencyT = token<number>('ScopeCertificateLifecycleDependency');
+      const ConsumerT = token<number>('ScopeCertificateLifecycleConsumer');
+      const localVault = new Vault({
+        providers: [
+          { provide: DependencyT, useValue: 1 },
+          {
+            provide: ConsumerT,
+            deps: [DependencyT],
+            useFactory: (dependency: unknown) => Number(dependency) + 1,
+          },
+        ],
+      });
+      const localScope = localVault.createScope();
+      const internalVault = localVault as unknown as {
+        _canResolveInScope(token: unknown, scope: Scope): boolean;
+      };
+
+      expect(internalVault._canResolveInScope(ConsumerT, localScope)).toBe(true);
+      localScope.override(DependencyT, 2);
+      expect(localScope.tryResolve(ConsumerT)).toBeUndefined();
+    });
+
     it('tryResolve cached scope-local hits bypass resolvability graph validation', () => {
       const config = new Config();
       scope.provide(ConfigT, config);

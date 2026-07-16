@@ -45,6 +45,7 @@ import {
   FLAG_HAS_NO_DEPS,
   FLAG_LOCAL_DEPS_VALIDATED,
   FLAG_OWNS_INSTANCE,
+  FLAG_RESOLVABLE,
   FLAG_VALUE_PROVIDER,
   LIFECYCLE_MASK,
   LIFECYCLE_SCOPED,
@@ -948,10 +949,15 @@ export class Vault {
    * @internal
    */
   private _canResolveInternal(canonical: CanonicalId): boolean {
+    const rootEntry = this.store.getByCanonical(canonical);
+    if (rootEntry !== undefined && rootEntry.flags & FLAG_RESOLVABLE) return true;
     if (!this._hasVisibleToken(canonical)) return false;
 
     try {
-      this._validateResolvableGraph(canonical, new ResolutionPath(), true);
+      const entirelyLocal = this._validateResolvableGraph(canonical, new ResolutionPath(), true);
+      if (entirelyLocal && this.entriesSealed && rootEntry !== undefined) {
+        rootEntry.flags |= FLAG_RESOLVABLE;
+      }
       return true;
     } catch (error) {
       if (!this._isExpectedCanResolveFailure(error)) throw error;
@@ -961,10 +967,17 @@ export class Vault {
 
   /** @internal Scope-aware resolvability check used by Scope.tryResolve(). */
   _canResolveInScope<T>(token: Token<T>, scope: Scope): boolean {
+    if (scope._isResolvableCertified(token.id)) return true;
     if (!this._hasVisibleToken(token.id)) return false;
 
     try {
-      this._validateResolvableGraph(token.id, new ResolutionPath(), false, scope);
+      const entirelyLocal = this._validateResolvableGraph(
+        token.id,
+        new ResolutionPath(),
+        false,
+        scope
+      );
+      if (entirelyLocal && this.entriesSealed) scope._certifyResolvable(token.id);
       return true;
     } catch (error) {
       if (!this._isExpectedCanResolveFailure(error)) throw error;
@@ -993,17 +1006,16 @@ export class Vault {
     path: ResolutionPath,
     isRoot = false,
     scope?: Scope
-  ): void {
+  ): boolean {
     const scopeEntry = scope?.getLocalEntry(canonical);
     if (scopeEntry && scopeEntry.flags & FLAG_HAS_INSTANCE) {
       this._validateLifecycleRulesForEntry(canonical, scopeEntry, path);
-      return;
+      return true;
     }
 
     const localEntry = this.store.getByCanonical(canonical);
     if (localEntry) {
-      this._validateLocalResolvableGraph(canonical, localEntry, path, isRoot, scope);
-      return;
+      return this._validateLocalResolvableGraph(canonical, localEntry, path, isRoot, scope);
     }
 
     this.resolveLazyAttachments();
@@ -1031,6 +1043,7 @@ export class Vault {
       scope,
       true
     );
+    return false;
   }
 
   private _validateLocalResolvableGraph(
@@ -1040,7 +1053,7 @@ export class Vault {
     isRoot = false,
     scope?: Scope,
     boundaryAlreadyValidated = false
-  ): void {
+  ): boolean {
     if (!path.tryEnter(canonical)) {
       throw new CircularDependencyError(
         path.cycle(canonical).map((token) => this.describeToken(token))
@@ -1054,16 +1067,18 @@ export class Vault {
 
       if (!boundaryAlreadyValidated) this._validateLifecycleRules(canonical, path);
 
+      let entirelyLocal = true;
       for (const [idx, dep] of entry.summons.entries()) {
         if (dep === undefined) {
           throw new MissingInjectDecoratorError(entry.ctor?.name ?? entry.metadata.label, idx);
         }
-        this._validateResolvableGraph(dep, path, false, scope);
+        if (!this._validateResolvableGraph(dep, path, false, scope)) entirelyLocal = false;
       }
 
       for (const dep of entry.factoryDeps) {
-        this._validateResolvableGraph(dep, path, false, scope);
+        if (!this._validateResolvableGraph(dep, path, false, scope)) entirelyLocal = false;
       }
+      return entirelyLocal;
     } finally {
       path.leave(canonical);
     }
@@ -2070,6 +2085,10 @@ export class Vault {
         this.importedModules.length = initialImportCount;
         throw error;
       }
+    }
+
+    if (this.importedModules.length !== initialImportCount) {
+      for (const entry of this.store.values()) entry.flags &= ~FLAG_RESOLVABLE;
     }
 
     this._checkCircularAttachment(this.importedModules, [this.name], new Set([this]));

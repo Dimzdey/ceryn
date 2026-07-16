@@ -128,6 +128,12 @@ export class Scope {
    */
   private localRegistrations?: Map<CanonicalId, Entry>;
 
+  /** Incremented after every successful local registration mutation. */
+  private registrationGeneration = 0;
+
+  /** Positive scope-aware resolvability results, keyed by token and generation. */
+  private resolvabilityCertificates?: Map<CanonicalId, number>;
+
   /**
    * Reference to the parent vault for resolution delegation.
    * Injected during construction to enable scope-based resolution.
@@ -269,6 +275,8 @@ export class Scope {
         this.tokenDisposers.set(token.id, disposer);
       }
     }
+
+    this.registrationGeneration++;
   }
 
   /**
@@ -311,6 +319,21 @@ export class Scope {
    */
   getLocalEntry(canonical: CanonicalId): Entry | undefined {
     return this.localRegistrations?.get(canonical);
+  }
+
+  /** @internal Check a positive scope-aware certificate without allocating. */
+  _isResolvableCertified(canonical: CanonicalId): boolean {
+    return this.resolvabilityCertificates?.get(canonical) === this.registrationGeneration;
+  }
+
+  /** @internal Record a positive scope-aware certificate lazily. */
+  _certifyResolvable(canonical: CanonicalId): void {
+    (this.resolvabilityCertificates ??= new Map()).set(canonical, this.registrationGeneration);
+  }
+
+  private clearResolvabilityCertificates(): void {
+    this.resolvabilityCertificates?.clear();
+    this.resolvabilityCertificates = undefined;
   }
 
   /**
@@ -424,6 +447,7 @@ export class Scope {
   disposeSync() {
     if (this.disposed) return; // Idempotent - safe to call multiple times
     this.disposed = true;
+    this.clearResolvabilityCertificates();
 
     if (!this.disposers) {
       // Clear cache if it exists (without triggering getter)
@@ -459,6 +483,7 @@ export class Scope {
   async dispose() {
     if (this.disposed) return; // Idempotent - safe to call multiple times
     this.disposed = true;
+    this.clearResolvabilityCertificates();
 
     if (!this.disposers) {
       // Clear cache if it exists (without triggering getter)

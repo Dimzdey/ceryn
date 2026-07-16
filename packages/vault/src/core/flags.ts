@@ -11,7 +11,8 @@
  *   Bit  5: Entry is backed by a pre-created value provider
  *   Bit  6: All declared dependencies were local and lifecycle-validated
  *   Bit  7: Owned singleton is tracked for LIFO disposal
- *   Bits 8-31: Reserved for future flags
+ *   Bit  8: Root graph is certified resolvable within this sealed Vault
+ *   Bits 9-31: Reserved for future flags
  *
  * Design rationale:
  *   - Lifecycle in bits 0-1 for fast masking and comparison
@@ -68,6 +69,9 @@ export const FLAG_LOCAL_DEPS_VALIDATED = 1 << 6; // Bit 6
 
 /** Owned singleton token is present in its Vault's LIFO disposal order. */
 export const FLAG_DISPOSAL_TRACKED = 1 << 7; // Bit 7
+
+/** Sealed root graph was successfully validated without crossing a Vault boundary. */
+export const FLAG_RESOLVABLE = 1 << 8; // Bit 8
 
 /**
  * Legacy alias for LIFECYCLE_SINGLETON (bit pattern 0b00).
